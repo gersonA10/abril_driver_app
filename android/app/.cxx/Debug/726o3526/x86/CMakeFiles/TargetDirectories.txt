@@ -1,0 +1,2 @@
+/Users/gersonaguilar/Documents/abril_driver_app/android/app/.cxx/Debug/726o3526/x86/CMakeFiles/edit_cache.dir
+/Users/gersonaguilar/Documents/abril_driver_app/android/app/.cxx/Debug/726o3526/x86/CMakeFiles/rebuild_cache.dir
