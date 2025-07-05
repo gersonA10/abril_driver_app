@@ -13,6 +13,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:abril_driver_app/functions/audio_servce.dart';
@@ -116,9 +117,7 @@ dynamic isAvailable;
 List vechiletypeslist = [];
 List<fmlt.LatLng> fmpoly = [];
 
-// class _MapsState extends State<Maps>with WidgetsBindingObserver, SingleTickerProviderStateMixin {
-class _MapsState extends State<Maps>
-    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProviderStateMixin {
   Map<String, dynamic>? datosDeuda;
   fmlt.LatLng? pickupLocation;
   List driverData = [];
@@ -222,58 +221,24 @@ class _MapsState extends State<Maps>
 
   StreamSubscription<LocationData>? _locationSubscription;
 
-  Future<void> _initializeLocation() async {
-    try {
-      PermissionStatus permissionGranted = await _location.hasPermission();
-      if (permissionGranted == PermissionStatus.denied) {
-        permissionGranted = await _location.requestPermission();
-        if (permissionGranted != PermissionStatus.granted) {
-          debugPrint("❌ Permiso de ubicación denegado");
-          return;
-        }
-      }
+  /**
+   * TODO: FM - Debounce para actualizaciones de ubicación
+   */  
+  // Variables para controlar el estado de los iconos
+  bool _iconsLoaded = false;
+  bool _loadingIcons = false;
 
-      bool serviceEnabled = await _location.serviceEnabled();
-      if (!serviceEnabled) {
-        serviceEnabled = await _location.requestService();
-        if (!serviceEnabled) {
-          debugPrint("❌ El servicio de ubicación está desactivado");
-          return;
-        }
-      }
+  /**
+   * TODO: Prop Progress bar
+   * */  
+  AnimationController? _progressAnimationController;
+  Animation<double>? _progressAnimation;
+  Timer? _progressUpdateTimer;
+  bool _isProgressBarActive = false;
+  double _currentProgress = 1.0; // Iniciar en 1.0 (100%)
+  String _progressLabel = '';
+  Duration _totalProgressDuration = const Duration(seconds: 12);
 
-      await _location.changeSettings(
-        accuracy: LocationAccuracy.high,
-        interval: 500,
-        distanceFilter: 0,
-      );
-
-      final initialLocation = await _location.getLocation();
-      setState(() {
-        currentPositionNew = fmlt.LatLng(
-          initialLocation.latitude!,
-          initialLocation.longitude!,
-        );
-      });
-
-      // 🔻 Guarda la suscripción
-      _locationSubscription =
-          _location.onLocationChanged.listen((LocationData newLocation) {
-        if (userDetails['active'] == false) return;
-
-        final newLatLng =
-            fmlt.LatLng(newLocation.latitude!, newLocation.longitude!);
-        currentPositionNew = newLatLng;
-
-        if (_isCameraFollowing) {
-          _fmController.move(newLatLng, _fmController.camera.zoom);
-        }
-      });
-    } catch (e, stacktrace) {
-      debugPrint("🔥 Error en _initializeLocation: $e");
-      debugPrint(stacktrace.toString());
-    }
-  }
 
   Future<void> detenerUbicacion() async {
     await _locationSubscription?.cancel();
@@ -281,14 +246,30 @@ class _MapsState extends State<Maps>
     debugPrint("🛑 GPS desactivado (stream cancelado)");
   }
 
-// Método que se ejecuta cuando el usuario empieza a mover la cámara
+  
+
+  /**
+   * FIXME: FM Camera Move start
+   */
+  // Método que se ejecuta cuando el usuario empieza a mover la cámara
   void _onCameraMoveStarted() {
+    // print('TODO: FM ❌ ❌ ❌ ❌ ❌ ❌ Moviendo camera manualmente');  
+    iniciarProgressBar(
+      duration: _totalProgressDuration,
+      onCompleted: () {
+        restartCurrentLocationImproved();
+        if (_areIconsReady()) {
+          updateMarkersAndMap();
+        } else {
+          _loadMarkerIcons().then((_) => updateMarkersAndMap());
+        }
+      });
     setState(() {
       _isCameraFollowing = false; // Detener el seguimiento automático
     });
   }
-
-// Método que se ejecuta al presionar el botón de "mi ubicación"
+  
+  // Método que se ejecuta al presionar el botón de "mi ubicación"
   void _onFollowLocationPressed() {
     setState(() {
       _isCameraFollowing = true; // Reactivar el seguimiento
@@ -296,6 +277,8 @@ class _MapsState extends State<Maps>
 
     // Mover la cámara a la ubicación actual
     if (currentPositionNew != null) {
+      print('TODO: FM - Actualizar el globo');
+      cancelarProgressBar();
       // TODO: FM GPS Controller
       _fmController.move(currentPositionNew!, _fmController.camera.zoom);
     }
@@ -355,8 +338,8 @@ class _MapsState extends State<Maps>
   }
 
   obtenerPosicionActual() async {
-    geolocator.Position position =
-        await geolocator.Geolocator.getCurrentPosition(
+    print('TODO: FM - Obtener posición actual');
+    geolocator.Position position = await geolocator.Geolocator.getCurrentPosition(
       desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
     );
     setState(() {
@@ -424,6 +407,590 @@ class _MapsState extends State<Maps>
     }
   }
 
+  
+  /**
+   * FIXME: FM nuevos cmabios en la estructura
+   */
+
+  // 1. MÉTODO PARA INICIAR EL PROGRESS BAR
+  void iniciarProgressBar({Duration? duration, String? label, VoidCallback? onCompleted}) {
+      cancelarProgressBar();
+    final progressDuration = duration ?? _totalProgressDuration;
+    
+    print('🟢 Iniciando progress bar decremental por ${progressDuration.inSeconds} segundos');
+    
+    // Crear el AnimationController
+    _progressAnimationController = AnimationController(
+      duration: progressDuration,
+      vsync: this,
+    );
+    
+    // Crear la animación INVERSA (de 1.0 a 0.0)
+    _progressAnimation = Tween<double>(
+      begin: 1.0, // Empezar en 100%
+      end: 0.0,   // Terminar en 0%
+    ).animate(CurvedAnimation(
+      parent: _progressAnimationController!,
+      curve: Curves.linear, // Progreso lineal
+    ));
+    
+    // Configurar el listener de la animación
+    _progressAnimation!.addListener(() {
+      if (mounted) {
+        setState(() {
+          _currentProgress = _progressAnimation!.value;
+          
+          // Calcular segundos restantes basado en el progreso restante
+          int secondsLeft = (_currentProgress * progressDuration.inSeconds).ceil();
+          
+          _progressLabel = label ?? 'Regresando a tu ubicación en ${secondsLeft}s';
+        });
+      }
+    });
+    
+    // Configurar qué hacer cuando termine (llega a 0.0)
+    _progressAnimation!.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        print('✅ Progress bar decremental completado');
+        
+        // Ocultar el progress bar
+        if (mounted) {
+          setState(() {
+            _isProgressBarActive = false;
+          });
+        }
+        
+        // Ejecutar callback si se proporcionó
+        if (onCompleted != null) {
+          onCompleted();
+        } else {
+          // Acción por defecto: regresar a ubicación GPS
+          // _returnToGPSLocation();
+        }
+        
+        // Limpiar recursos
+        _cleanupProgressBar();
+      }
+    });
+    
+    // Mostrar el progress bar y iniciar animación
+    setState(() {
+      _isProgressBarActive = true;
+      _currentProgress = 1.0; // Empezar en 100%
+    });
+    
+    // Iniciar la animación
+    _progressAnimationController!.forward();
+  }
+
+  // 2. MÉTODO PARA CANCELAR EL PROGRESS BAR
+  void cancelarProgressBar() {
+    if (!_isProgressBarActive) return;
+    
+    print('🔴 Cancelando progress bar');
+    
+    // Detener la animación
+    _progressAnimationController?.stop();
+    
+    // Ocultar el progress bar con animación suave
+    if (mounted) {
+      setState(() {
+        _isProgressBarActive = false;
+      });
+    }
+        
+    // Limpiar recursos
+    _cleanupProgressBar();
+  }
+
+  // 3. MÉTODO PARA REINICIAR EL PROGRESS BAR
+  void reiniciarProgressBar({Duration? newDuration, String? newLabel, VoidCallback? onCompleted, bool showMessage = true}) {
+    print('🔄 Reiniciando progress bar');
+    
+    // Mostrar mensaje opcional
+    if (showMessage && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Reiniciando contador'),
+          duration: const Duration(seconds: 1),
+          backgroundColor: newRedColor,
+        ),
+      );
+    }
+    
+    // Cancelar el progreso actual sin mensaje
+    cancelarProgressBar();
+    
+    // Esperar un frame para que se complete la cancelación
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Iniciar nuevamente con los nuevos parámetros
+      iniciarProgressBar(
+        duration: newDuration,
+        label: newLabel,
+        onCompleted: onCompleted,
+      );
+    });
+  }
+
+  // MÉTODO AUXILIAR PARA LIMPIAR RECURSOS
+  void _cleanupProgressBar() {
+    _progressUpdateTimer?.cancel();
+    _progressUpdateTimer = null;
+
+    _progressAnimationController?.dispose();
+    _progressAnimationController = null;
+
+    _progressAnimation = null;
+    _currentProgress = 0.0;
+  }
+
+  // Reanudar el progress bar
+  void reanudarProgressBar() {
+    if (_progressAnimationController != null && _isProgressBarActive) {
+      print('▶️ Reanudando progress bar');
+      _progressAnimationController!.forward();
+    }
+  }
+
+  // Función para cargar iconos de forma asíncrona
+  Future<void> _loadMarkerIcons() async {
+    if (_iconsLoaded || _loadingIcons) return;
+    
+    _loadingIcons = true;
+    print('🔄 Cargando iconos de marcadores...');
+    
+    try {
+      final Uint8List markerIcon = await getBytesFromAsset('assets/images/auto-rojo.png', 40);
+      final Uint8List markerIcon2 = await getBytesFromAsset('assets/images/bike.png', 40);
+      final Uint8List markerIcon3 = await getBytesFromAsset('assets/images/vehicle-marker.png', 40);
+      
+      // Cargar iconos adicionales si es owner
+      if (userDetails['role'] == 'owner') {
+        final Uint8List onlinebikeicon1 = await getBytesFromAsset('assets/images/bike_online.png', 40);
+        final Uint8List onridebikeicon1 = await getBytesFromAsset('assets/images/bike_onride.png', 40);
+        final Uint8List offlinebikeicon1 = await getBytesFromAsset('assets/images/bike.png', 40);
+        final Uint8List onrideicon1 = await getBytesFromAsset('assets/images/onboardicon.png', 40);
+        final Uint8List offlineicon1 = await getBytesFromAsset('assets/images/offlineicon.png', 40);
+        final Uint8List onlineicon1 = await getBytesFromAsset('assets/images/onlineicon.png', 40);
+        final Uint8List onridedeliveryicon1 = await getBytesFromAsset('assets/images/onboardicon_delivery.png', 40);
+        final Uint8List offlinedeliveryicon1 = await getBytesFromAsset('assets/images/offlineicon_delivery.png', 40);
+        final Uint8List onlinedeliveryicon1 = await getBytesFromAsset('assets/images/onlineicon_delivery.png', 40);
+        
+        // Asignar iconos de owner
+        onrideicon = BitmapDescriptor.fromBytes(onrideicon1);
+        offlineicon = BitmapDescriptor.fromBytes(offlineicon1);
+        onlineicon = BitmapDescriptor.fromBytes(onlineicon1);
+        onridedeliveryicon = BitmapDescriptor.fromBytes(onridedeliveryicon1);
+        offlinedeliveryicon = BitmapDescriptor.fromBytes(offlinedeliveryicon1);
+        onlinedeliveryicon = BitmapDescriptor.fromBytes(onlinedeliveryicon1);
+        onridebikeicon = BitmapDescriptor.fromBytes(onridebikeicon1);
+        offlinebikeicon = BitmapDescriptor.fromBytes(offlinebikeicon1);
+        onlinebikeicon = BitmapDescriptor.fromBytes(onlinebikeicon1);
+      }
+      
+      // Asignar iconos principales
+      setState(() {
+        pinLocationIcon = BitmapDescriptor.fromBytes(markerIcon);
+        pinLocationIcon2 = BitmapDescriptor.fromBytes(markerIcon2);
+        pinLocationIcon3 = BitmapDescriptor.fromBytes(markerIcon3);
+        _iconsLoaded = true;
+        _loadingIcons = false;
+      });
+      
+      print('✅ Iconos de marcadores cargados correctamente');
+      
+      // Actualizar marcadores después de cargar iconos
+      if (currentPositionNew != null) {
+        await updateMarkersAndMap();
+      }
+      
+    } catch (e) {
+      print('❌ Error cargando iconos: $e');
+      _loadingIcons = false;
+    }
+  }
+
+  // Función mejorada para verificar si los iconos están listos
+  bool _areIconsReady() {
+    return _iconsLoaded && 
+          pinLocationIcon != null && 
+          pinLocationIcon2 != null && 
+          pinLocationIcon3 != null;
+  }
+
+  // Función optimizada para actualizar marcadores del conductor
+  Future<void> _updateDriverMarkers() async {
+    if (!mounted) return;
+    
+    // Verificar que los iconos estén cargados
+    if (!_areIconsReady()) {
+      print('⚠️ Iconos aún no están cargados, iniciando carga...');
+      await _loadMarkerIcons();
+      if (!_areIconsReady()) {
+        print('❌ No se pudieron cargar los iconos');
+        return;
+      }
+    }
+    
+    // Verificar que tenemos una posición válida
+    if (currentPositionNew == null) {
+      print('⚠️ No hay posición actual disponible');
+      return;
+    }
+    
+    try {
+      // Buscar el marcador del conductor existente
+      final driverMarkerIndex = myMarkers.indexWhere(
+        (m) => m.markerId == const MarkerId('1')
+      );
+      
+      // Crear el nuevo marcador del conductor
+      final newDriverMarker = _createDriverMarker();
+      
+      setState(() {
+        // Remover el marcador anterior si existe
+        if (driverMarkerIndex >= 0) {
+          myMarkers.removeAt(driverMarkerIndex);
+        }
+        
+        // Añadir el nuevo marcador
+        myMarkers.add(newDriverMarker);
+      });
+      
+      print('✅ Marcador del conductor actualizado con iconos');
+    } catch (e) {
+      print('❌ Error al actualizar marcadores: $e');
+    }
+  }
+
+  // Función mejorada para crear el marcador del conductor
+  Marker _createDriverMarker() {
+    return Marker(
+      markerId: const MarkerId('1'),
+      rotation: heading,
+      position: LatLng(
+        currentPositionNew!.latitude, 
+        currentPositionNew!.longitude
+      ),
+      icon: _getDriverIcon(),
+      anchor: const Offset(0.5, 0.5),
+    );
+  }
+
+  // Función mejorada para obtener el icono correcto del conductor
+  BitmapDescriptor _getDriverIcon() {
+    if (!_areIconsReady()) {
+      print('⚠️ Iconos no están listos, usando icono por defecto');
+      return BitmapDescriptor.defaultMarker;
+    }
+    
+    if (userDetails['vehicle_type_icon_for'] == 'motor_bike') {
+      return pinLocationIcon2!;
+    } else if (userDetails['vehicle_type_icon_for'] == 'taxi') {
+      return pinLocationIcon!;
+    } else {
+      return pinLocationIcon3!;
+    }
+  }
+
+  // Función principal mejorada para actualizar marcadores y mapa
+  Future<void> updateMarkersAndMap() async {
+    try {
+      // 1. PRIMERO: Cargar iconos si no están listos
+      if (!_areIconsReady()) {
+        await _loadMarkerIcons();
+      }
+      
+      // 2. SEGUNDO: Actualizar los marcadores
+      await _updateDriverMarkers();
+      
+      // 3. TERCERO: Actualizar la posición del mapa
+      await _updateMapPosition();
+      
+      print('✅ Marcadores y mapa actualizados correctamente');
+    } catch (e) {
+      print('❌ Error al actualizar marcadores y mapa: $e');
+    }
+  }
+
+
+
+  // TODO: FM - STEP 1
+  // Función para actualizar la posición del mapa
+  Future<void> _updateMapPosition() async {
+    if (!mounted || currentPositionNew == null) return;
+    
+    try {
+      if (mapType == 'google') {
+        // Para Google Maps
+        if (_controller != null) {
+          await _controller!.animateCamera(
+            CameraUpdate.newLatLng(
+              LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude)
+            )
+          );
+        }
+      } else {
+        // Para Flutter Map (OpenStreetMap)
+        if (_isCameraFollowing) {
+          _fmController.move(
+            currentPositionNew!, 
+            _fmController.camera.zoom
+          );
+        }
+      }
+      
+      print('✅ Posición del mapa actualizada');
+    } catch (e) {
+      print('❌ Error al actualizar posición del mapa: $e');
+    }
+  }
+
+  // Función mejorada para inicializar la ubicación
+  Future<void> _initializeLocationImproved({int opcion = 0}) async {
+    print('🔄 ################################### $opcion ##############################');
+    try {
+      // 1. PRIMERO: Cargar iconos
+      await _loadMarkerIcons();
+      
+      // 2. Verificar permisos
+      PermissionStatus permissionGranted = await _location.hasPermission();
+      if (permissionGranted == PermissionStatus.denied) {
+        permissionGranted = await _location.requestPermission();
+        if (permissionGranted != PermissionStatus.granted) {
+          debugPrint("❌ Permiso de ubicación denegado");
+          return;
+        }
+      }
+
+      // 3. Verificar servicio de ubicación
+      bool serviceEnabled = await _location.serviceEnabled();
+      if (!serviceEnabled) {
+        serviceEnabled = await _location.requestService();
+        if (!serviceEnabled) {
+          debugPrint("❌ El servicio de ubicación está desactivado");
+          return;
+        }
+      }
+
+      // 4. Configurar precisión
+      await _location.changeSettings(
+        accuracy: LocationAccuracy.high,
+        interval: 1000, // 1 segundo
+        distanceFilter: 5, // 5 metros mínimo
+      );
+
+      // 5. Obtener ubicación inicial
+      final initialLocation = await _location.getLocation();
+      final initialLatLng = fmlt.LatLng(
+        initialLocation.latitude!,
+        initialLocation.longitude!,
+      );
+      
+      setState(() {
+        currentPositionNew = initialLatLng;
+        locationAllowed = true;
+        state = '3';
+        _isLoading = false;
+      });
+      
+      // 6. Actualizar marcadores y mapa inicialmente
+      await updateMarkersAndMap();
+
+      // 7. Configurar el listener con la función optimizada
+      _locationSubscription?.cancel();
+      _locationSubscription = _location.onLocationChanged
+          .where((location) => location.latitude != null && location.longitude != null)
+          .listen(_onLocationChanged);
+
+      debugPrint("✅ Ubicación inicializada correctamente");
+
+      // 🔻 Guarda la suscripción
+      _locationSubscription = _location.onLocationChanged.listen((LocationData newLocation) {
+
+        // print('🔄 ******************** $opcion ********************');
+
+        if (userDetails['active'] == false) return;
+
+        final newLatLng = fmlt.LatLng(newLocation.latitude!, newLocation.longitude!);
+        currentPositionNew = newLatLng;
+        /*
+        *TODO: FM - seguimiento de cámara
+        */
+        // print('🔄');
+        if (_isCameraFollowing) {
+          // print('🔴 Siguiendoooooooooooooo 🔴');
+          _fmController.move(newLatLng, _fmController.camera.zoom);
+          restartState = true;
+        } else {
+          /**
+           * FIXME: FM - Cámara no está siguiendo
+           */
+          // print('🔄 Cámara no está siguiendo, no mover');
+          // print('🔴 11111111111111111111111111 🔴');
+          if(restartState) {
+            print('TODO: FM Ejecutando script ***********************');
+            // print('🔴 22222222222222222222222 🔴');
+            restartState = false;
+            /**
+             * TODO: Start Progress Bar
+             */
+            if(_isProgressBarActive) {
+              // print('🔴 3333333333333333333333333333 🔴');
+              cancelarProgressBar();
+            }
+
+            iniciarProgressBar(
+              duration: _totalProgressDuration,
+              onCompleted: () {
+                restartCurrentLocationImproved();
+                if (_areIconsReady()) {
+                  updateMarkersAndMap();
+                } else {
+                  _loadMarkerIcons().then((_) => updateMarkersAndMap());
+                }
+              });
+          } else {
+            // print('🔴 44444444444444444444444444 🔴');
+          }
+        }});
+    } catch (e, stacktrace) {
+      debugPrint("🔥 Error en _initializeLocationImproved: $e");
+      debugPrint(stacktrace.toString());
+    }
+  }
+
+  // Función optimizada para el listener de ubicación
+  void _onLocationChanged(LocationData newLocation) {
+    if (userDetails['active'] == false || !mounted) return;
+
+    final newLatLng = fmlt.LatLng(
+      newLocation.latitude!, 
+      newLocation.longitude!
+    );
+    
+    // Verificar si el cambio de ubicación es significativo (más de 3 metros)
+    if (currentPositionNew != null) {
+      final distance = calculateDistance(
+        currentPositionNew!.latitude,
+        currentPositionNew!.longitude,
+        newLatLng.latitude,
+        newLatLng.longitude,
+      );
+      
+      if (distance < 3) return; // Reducido a 3 metros para más precisión
+    }
+    
+    // Actualizar la posición global
+    currentPositionNew = newLatLng;
+    
+    // Solo actualizar si los iconos están listos
+    if (_areIconsReady()) {
+      updateMarkersAndMap();
+    }
+  }
+
+  // Función mejorada para getLocs (reemplazar la función existente)
+  Future<void> getLocsImproved() async {
+    unloadImage = false;
+    afterImageUploadError = '';
+    beforeImageUploadError = '';
+    shipLoadImage = null;
+    shipUnloadImage = null;
+    
+    permission = await geolocator.GeolocatorPlatform.instance.checkPermission();
+    serviceEnabled = await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled();
+
+    if (permission == geolocator.LocationPermission.denied ||
+        permission == geolocator.LocationPermission.deniedForever || 
+        serviceEnabled == false) {
+      gettingPerm++;
+      if (gettingPerm > 1) {
+        locationAllowed = false;
+        if (userDetails['active'] == true) {
+          var val = await driverStatus();
+          if (val == 'logout') {
+            navigateLogout();
+          }
+        }
+        state = '3';
+      } else {
+        state = '2';
+      }
+      setState(() {
+        _isLoading = false;
+      });
+    } else if (permission == geolocator.LocationPermission.whileInUse ||
+              permission == geolocator.LocationPermission.always) {
+      if (serviceEnabled == true) {
+        // Cargar iconos de forma asíncrona
+        await _loadMarkerIcons();
+      }
+
+      if (makeOnline == true && userDetails['active'] == false) {
+        var val = await driverStatus();
+        if (val == 'logout') {
+          navigateLogout();
+        }
+      }
+      makeOnline = false;
+      
+      if (mounted) {
+        // print('✅ Location allowed con iconos cargados');
+        setState(() {
+          locationAllowed = true;
+          state = '3';
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  // Función para forzar actualización manual
+  void forceUpdateMarkersAndMap() {
+    if (currentPositionNew != null) {
+      updateMarkersAndMap();
+    } else {
+      // print('⚠️ No hay posición actual para actualizar');
+    }
+  }
+
+  // Función mejorada para restartCurrentLocation
+  void restartCurrentLocationImproved() async {
+    // print('🔄 Reiniciando ubicación actual...');
+    
+    _onFollowLocationPressed(); // Reactivar seguimiento de cámara
+    
+    if (locationAllowed == true && currentPositionNew != null) {
+      // Actualizar marcadores y mapa
+      await updateMarkersAndMap();
+    } else {
+      // Manejar permisos y reinicializar
+      if (serviceEnabled == true) {
+        setState(() {
+          _locationDenied = true;
+        });
+      } else {
+        await geolocator.Geolocator.getCurrentPosition(
+          desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation
+        );
+        setState(() {
+          _isLoading = true;
+        });
+        /**
+         * FIXME: FM - Mejorar la obtención de ubicaciones
+         */
+        // await getLocs();
+        await getLocsImproved();
+        if (serviceEnabled == true) {
+          setState(() {
+            _locationDenied = true;
+          });
+        }
+      }
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -431,7 +998,11 @@ class _MapsState extends State<Maps>
     WidgetsBinding.instance.addObserver(this);
     requestOverlayPermission();
     // _fmController = fm.MapController();
-    _initializeLocation();
+    
+    // FIXME: FM - Inicializar el controlador del mapa
+    // _initializeLocation();
+    _initializeLocationImproved(opcion: 1);
+
     WidgetsFlutterBinding.ensureInitialized();
     // initializeNotifications();
     super.initState();
@@ -456,7 +1027,13 @@ class _MapsState extends State<Maps>
     currentpage = true;
     _isDarkTheme = isDarkTheme;
     // getadminCurrentMessages();
-    getLocs();
+
+    /**
+     * FIXME: FM - Mejorar la obtención de ubicaciones
+     */
+    // getLocs();
+    getLocsImproved();
+    
     getonlineoffline();
     listenToRequestMeta();
     getData();
@@ -727,14 +1304,12 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
 
     case AppLifecycleState.detached:
       FlutterBackgroundService().invoke('setAsForeground');
-      FlutterBackgroundService()
-          .invoke('updateAppLifeState', {"AppLifeState": true});
+      FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": true});
       log('App Detached');
       break;
 
     case AppLifecycleState.hidden:
-      FlutterBackgroundService()
-          .invoke('updateAppLifeState', {"AppLifeState": false});
+      FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": false});
       log('App Hidden');
       break;
   }
@@ -743,6 +1318,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
 
   @override
   void dispose() {
+    // FIXME: FM Dispose de recursos
+    _locationSubscription?.cancel();
+    _locationSubscription = null;
+
+    
     WidgetsBinding.instance.removeObserver(this);
     isInChatPage = false;
     confirmacionSubscription?.cancel();
@@ -991,14 +1571,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     shipLoadImage = null;
     shipUnloadImage = null;
     permission = await geolocator.GeolocatorPlatform.instance.checkPermission();
-    serviceEnabled =
-        await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled();
+    serviceEnabled = await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled();
 
     if (permission == geolocator.LocationPermission.denied ||
-        permission == geolocator.LocationPermission.deniedForever ||
-        serviceEnabled == false) {
+        permission == geolocator.LocationPermission.deniedForever || serviceEnabled == false) {
       gettingPerm++;
-
       if (gettingPerm > 1) {
         locationAllowed = false;
         if (userDetails['active'] == true) {
@@ -1032,84 +1609,33 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
         // if(userDetails['transport_type'] == 'taxi'){
         markerIcon = await getBytesFromAsset('assets/images/auto-rojo.png', 40);
         markerIcon2 = await getBytesFromAsset('assets/images/bike.png', 40);
-        markerIcon3 =
-            await getBytesFromAsset('assets/images/vehicle-marker.png', 40);
+        markerIcon3 = await getBytesFromAsset('assets/images/vehicle-marker.png', 40);
         if (userDetails['role'] == 'owner') {
-          onlinebikeicon1 =
-              await getBytesFromAsset('assets/images/bike_online.png', 40);
-          onridebikeicon1 =
-              await getBytesFromAsset('assets/images/bike_onride.png', 40);
-          offlinebikeicon1 =
-              await getBytesFromAsset('assets/images/bike.png', 40);
-          onrideicon1 =
-              await getBytesFromAsset('assets/images/onboardicon.png', 40);
-          offlineicon1 =
-              await getBytesFromAsset('assets/images/offlineicon.png', 40);
-          onlineicon1 =
-              await getBytesFromAsset('assets/images/onlineicon.png', 40);
-          onridedeliveryicon1 = await getBytesFromAsset(
-              'assets/images/onboardicon_delivery.png', 40);
-          offlinedeliveryicon1 = await getBytesFromAsset(
-              'assets/images/offlineicon_delivery.png', 40);
-          onlinedeliveryicon1 = await getBytesFromAsset(
-              'assets/images/onlineicon_delivery.png', 40);
+          onlinebikeicon1 = await getBytesFromAsset('assets/images/bike_online.png', 40);
+          onridebikeicon1 = await getBytesFromAsset('assets/images/bike_onride.png', 40);
+          offlinebikeicon1 = await getBytesFromAsset('assets/images/bike.png', 40);
+          onrideicon1 = await getBytesFromAsset('assets/images/onboardicon.png', 40);
+          offlineicon1 = await getBytesFromAsset('assets/images/offlineicon.png', 40);
+          onlineicon1 = await getBytesFromAsset('assets/images/onlineicon.png', 40);
+          onridedeliveryicon1 = await getBytesFromAsset('assets/images/onboardicon_delivery.png', 40);
+          offlinedeliveryicon1 = await getBytesFromAsset('assets/images/offlineicon_delivery.png', 40);
+          onlinedeliveryicon1 = await getBytesFromAsset('assets/images/onlineicon_delivery.png', 40);
           onrideicon = BitmapDescriptor.fromBytes(onrideicon1);
           offlineicon = BitmapDescriptor.fromBytes(offlineicon1);
           onlineicon = BitmapDescriptor.fromBytes(onlineicon1);
           onridedeliveryicon = BitmapDescriptor.fromBytes(onridedeliveryicon1);
-          offlinedeliveryicon =
-              BitmapDescriptor.fromBytes(offlinedeliveryicon1);
+          offlinedeliveryicon = BitmapDescriptor.fromBytes(offlinedeliveryicon1);
           onlinedeliveryicon = BitmapDescriptor.fromBytes(onlinedeliveryicon1);
           onridebikeicon = BitmapDescriptor.fromBytes(onridebikeicon1);
           offlinebikeicon = BitmapDescriptor.fromBytes(offlinebikeicon1);
           onlinebikeicon = BitmapDescriptor.fromBytes(onlinebikeicon1);
         }
 
-        // if (centerPosition == null) {
-
-        //   geolocator.Geolocator.getPositionStream(
-        //     locationSettings: geolocator.LocationSettings(
-        //       accuracy: geolocator.LocationAccuracy.best,
-        //       distanceFilter: 0,
-        //     ),
-        //   ).listen((Position? position){
-        //     if (position != null) {
-        //       setState(() {
-        //       centerPosition = LatLng(position.latitude, position.longitude);
-        //       heading = position.heading;
-        //       newPosition = fmlt.LatLng(position.latitude, position.longitude);
-        //       startPoint = newPosition;
-        //       });
-
-        //     }
-        //     if (showLocationRide == false) {
-        //       _fmController.move(newPosition!, 18);
-        //     }
-        //   });
-        // }
-
-        // if (mounted) {
-        //   setState(() {
-        //     pinLocationIcon = BitmapDescriptor.fromBytes(markerIcon);
-        //     pinLocationIcon2 = BitmapDescriptor.fromBytes(markerIcon2);
-        //     pinLocationIcon3 = BitmapDescriptor.fromBytes(markerIcon3);
-
-        //     if (myMarkers.isEmpty && userDetails['role'] != 'owner') {
-        //       myMarkers = [
-        //         Marker(
-        //             markerId: const MarkerId('1'),
-        //             rotation: heading,
-        //             position: centerPosition ?? LatLng(-21.522367, -64.728692),
-        //             icon: (userDetails['vehicle_type_icon_for'] == 'motor_bike')
-        //                 ? pinLocationIcon2
-        //                 : (userDetails['vehicle_type_icon_for'] == 'taxi')
-        //                     ? pinLocationIcon
-        //                     : pinLocationIcon3,
-        //             anchor: const Offset(0.5, 0.5))
-        //       ];
-        //     }
-        //   });
-        // }
+        // setState(() {
+        //   pinLocationIcon = BitmapDescriptor.fromBytes(markerIcon);
+        //   pinLocationIcon2 = BitmapDescriptor.fromBytes(markerIcon2);
+        //   pinLocationIcon3 = BitmapDescriptor.fromBytes(markerIcon3);
+        // });
       }
 
       if (makeOnline == true && userDetails['active'] == false) {
@@ -1120,6 +1646,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
       }
       makeOnline = false;
       if (mounted) {
+        // print('TODO: FM - Location allowed');
         setState(() {
           locationAllowed = true;
           state = '3';
@@ -1134,7 +1661,9 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     // await location.requestService();
     await geolocator.Geolocator.getCurrentPosition(
         desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
-    getLocs();
+    // FIXME: FM - Cambiar a Geolocator
+    // getLocs();
+    getLocsImproved();
   }
 
   getLocationPermission() async {
@@ -1161,12 +1690,188 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     setState(() {
       _isLoading = true;
     });
-    getLocs();
+
+    /**
+     * FIXME: FM - Mejorar la obtención de ubicaciones
+     */
+    // getLocs();
+    getLocsImproved();
+  }
+
+  double getBearing(LatLng begin, LatLng end) {
+    // double lat = (begin.latitude - end.latitude).abs();
+
+    // double lng = (begin.longitude - end.longitude).abs();
+
+    // if (begin.latitude < end.latitude && begin.longitude < end.longitude) {
+    //   return vector.degrees(atan(lng / lat));
+    // } else if (begin.latitude >= end.latitude &&
+    //     begin.longitude < end.longitude) {
+    //   return (90 - vector.degrees(atan(lng / lat))) + 90;
+    // } else if (begin.latitude >= end.latitude &&
+    //     begin.longitude >= end.longitude) {
+    //   return vector.degrees(atan(lng / lat)) + 180;
+    // } else if (begin.latitude < end.latitude &&
+    //     begin.longitude >= end.longitude) {
+    //   return (90 - vector.degrees(atan(lng / lat))) + 270;
+    // }
+
+    return -1;
+  }
+
+  animateCar(
+      double fromLat, //Starting latitude
+
+      double fromLong, //Starting longitude
+
+      double toLat, //Ending latitude
+
+      double toLong, //Ending longitude
+
+      StreamSink<List<Marker>> mapMarkerSink, //Stream build of map to update the UI
+
+      TickerProvider provider, //Ticker provider of the widget. This is used for animation
+
+      GoogleMapController controller, //Google map controller of our widget
+
+      markerid,
+      icon,
+      name,
+      number) async {
+        // print('### TODO: FM - Starting car animation from ($fromLat, $fromLong) to ($toLat, $toLong)');
+    final double bearing = getBearing(LatLng(fromLat, fromLong), LatLng(toLat, toLong));
+
+    dynamic carMarker;
+    if (name == '' && number == '') {
+      carMarker = Marker(
+          markerId: MarkerId(markerid),
+          position: LatLng(fromLat, fromLong),
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          flat: true,
+          draggable: false);
+    } else {
+      carMarker = Marker(
+          markerId: MarkerId(markerid),
+          position: LatLng(fromLat, fromLong),
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          infoWindow: InfoWindow(title: number, snippet: name),
+          flat: true,
+          draggable: false);
+    }
+
+    /**
+     * TODO: FM Añade nuevo marcador Coche
+     */
+    // print('### TODO: FM - Adding new car marker: $carMarker');
+    myMarkers.add(carMarker);
+
+    /**
+     * TODO: FM asignacion en el marcador
+    */
+    // print('### TODO: FM - Adding car marker to the map');
+    mapMarkerSink.add(Set<Marker>.from(myMarkers).toList());
+
+    Tween<double> tween = Tween(begin: 0, end: 1);
+
+    _animation = tween.animate(animationController)..addListener(() async {
+        // print('TODO: FM - Animation listener triggered');
+        myMarkers.removeWhere((element) => element.markerId == MarkerId(markerid));
+        final v = _animation!.value;
+        double lng = v * toLong + (1 - v) * fromLong;
+
+        double lat = v * toLat + (1 - v) * fromLat;
+
+        LatLng newPos = LatLng(lat, lng);
+
+        //New marker location
+
+        if (name == '' && number == '') {
+          carMarker = Marker(
+              markerId: MarkerId(markerid),
+              position: newPos,
+              icon: icon,
+              anchor: const Offset(0.5, 0.5),
+              flat: true,
+              rotation: bearing,
+              draggable: false);
+        } else {
+          carMarker = Marker(
+              markerId: MarkerId(markerid),
+              position: newPos,
+              icon: icon,
+              infoWindow: InfoWindow(title: number, snippet: name),
+              anchor: const Offset(0.5, 0.5),
+              flat: true,
+              rotation: bearing,
+              draggable: false);
+        }
+
+        //Adding new marker to our list and updating the google map UI.
+        // print('### TODO: FM - Updating car marker position: $carMarker');
+        myMarkers.add(carMarker);
+
+        mapMarkerSink.add(Set<Marker>.from(myMarkers).toList());
+      });
+
+    //Starting the animation
+
+    animationController.forward();
+
+    if (driverReq.isEmpty || driverReq['is_trip_start'] == 1) {
+      controller.getVisibleRegion().then((value) {
+        if (value.contains(myMarkers
+            .firstWhere((element) => element.markerId == MarkerId(markerid))
+            .position)) {
+        } else {
+          controller.animateCamera(CameraUpdate.newLatLng(centerPosition!));
+        }
+      });
+    }
+    animationController = null;
+  }
+
+  restartCurrentLocation() async {
+    // print('TODO: FM - Restarting current location BTN Click Location');
+    _onFollowLocationPressed();
+    if (locationAllowed == true) {
+      // _fmController.move(fmlt.LatLng(newPosition!.latitude, newPosition!.longitude), 17);
+      // print('TODO: FM Current GPS Position LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
+      _fmController.move(currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296), 17);
+      /**
+       * FIXME: FM - Mejorar reinicio de ubicación
+       */
+      // await getLocs();
+      await getLocsImproved();
+    } else {
+      if (serviceEnabled == true) {
+        setState(() {
+          _locationDenied = true;
+        });
+      } else {
+        await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
+        setState(() {
+          _isLoading = true;
+        });
+        /**
+         * FIXME: FM - Mejorar reinicio de ubicación
+         */
+        // await getLocs();
+        await getLocsImproved();
+        if (serviceEnabled == true) {
+          setState(() {
+            _locationDenied = true;
+          });
+        }
+      }
+    }
   }
 
   String _permission = '';
 
   GeoHasher geo = GeoHasher();
+  bool restartState = true;
 
   @override
   Widget build(BuildContext context) {
@@ -1303,9 +2008,8 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                   centerPosition!.latitude,
                   centerPosition!.longitude,
                 );
-                if (dist > 100 &&
-                    animationController == null &&
-                    _controller != null) {
+                if (dist > 100 && animationController == null && _controller != null) {
+                  // print('TODO: FM 1001 Animate car + de 100 mtrs');
                   animationController = AnimationController(
                     duration: const Duration(
                         milliseconds: 1500), //Animation duration of marker
@@ -1359,24 +2063,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                 if (_controller != null) {
                   mapPadding = media.width * 1;
                 }
-                // if (driverReq['is_completed'] == 1 && driverReq['requestBill'] != null && currentpage == true) {
-                //   dropProvider.mostrardDibujadoDestino = false;
-                //   initSHaredEndTrip();
-                //   pref.remove('requestId');
-                //   // navigated = true;
-                //   // currentpage = false;
-                //   // WidgetsBinding.instance.addPostFrameCallback((_) {
-                //   //   Navigator.pushAndRemoveUntil(
-                //   //       context,
-                //   //       MaterialPageRoute(
-                //   //           builder: (context) => const Invoice()),
-                //   //       (route) => false);
-                //   // });
-                //   // _pickAnimateDone = false;
-                //   // myMarkers.removeWhere( (element) => element.markerId != const MarkerId('1'));
-                //   // polyline.clear();
-                //   // polylineGot = false;
-                // }
               } else if (choosenRide.isEmpty && driverReq.isEmpty) {
                 mapPadding = 0;
                 if (myMarkers
@@ -1411,11 +2097,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                   : TextDirection.ltr,
               child: Scaffold(
                 drawer: const NavDrawer(),
-                // endDrawer: Container(
-                //   width: 40,
-                //   height: 40,
-                //   color: Color.fromRGBO(51, 51, 51, 1),
-                // ),
                 body: StreamBuilder(
                   stream: userDetails['role'] == 'owner'
                       ? FirebaseDatabase.instance
@@ -1432,8 +2113,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                       }
 
                       for (var element in driverData) {
-                        if (element['l'] != null &&
-                            element['is_deleted'] != 1) {
+                        if (element['l'] != null && element['is_deleted'] != 1) {
                           if (userDetails['role'] == 'owner') {
                             if (userDetails['role'] == 'owner' &&
                                 offlineicon != null &&
@@ -1443,10 +2123,8 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                 onlinebikeicon != null &&
                                 onridebikeicon != null &&
                                 filtericon == 0) {
-                              if (myMarkers
-                                  .where((e) => e.markerId.toString().contains(
-                                      'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                  .isEmpty) {
+                              if (myMarkers.where((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}')).isEmpty) {
+                                // print('TODO: FM Adding marker for ${element['vehicle_type_icon']}');
                                 myMarkers.add(Marker(
                                   markerId: (element['is_active'] == 0)
                                       ? MarkerId(
@@ -1737,27 +2415,21 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                       element['l'][0],
                                       element['l'][1]);
                                   if (dist > 100 && _controller != null) {
+                                    // print('TODO: FM 1002 Animate car + de 100 mtrs');
                                     animationController = AnimationController(
-                                      duration: const Duration(
-                                          milliseconds:
-                                              1500), //Animation duration of marker
-
+                                      duration: const Duration(milliseconds: 1500), //Animation duration of marker
                                       vsync: this, //From the widget
                                     );
 
                                     animateCar(
-                                        myMarkers
-                                            .lastWhere((e) => e.markerId
+                                        myMarkers.lastWhere((e) => e.markerId
                                                 .toString()
-                                                .contains(
-                                                    'car#${element['id']}#${element['vehicle_type_icon']}'))
+                                                .contains('car#${element['id']}#${element['vehicle_type_icon']}'))
                                             .position
                                             .latitude,
-                                        myMarkers
-                                            .lastWhere((e) => e.markerId
+                                        myMarkers.lastWhere((e) => e.markerId
                                                 .toString()
-                                                .contains(
-                                                    'car#${element['id']}#${element['vehicle_type_icon']}'))
+                                                .contains('car#${element['id']}#${element['vehicle_type_icon']}'))
                                             .position
                                             .longitude,
                                         element['l'][0],
@@ -1800,29 +2472,19 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                 userDetails['role'] == 'owner' &&
                                 onlineicon != null) {
                               if (element['l'] != null) {
-                                if (element['is_active'] == 0 &&
-                                    offlineicon != null) {
-                                  if (myMarkers
-                                      .where((e) => e.markerId.toString().contains(
-                                          'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                      .isEmpty) {
-                                    myMarkers.add(Marker(
-                                      markerId: (element['is_active'] == 0)
-                                          ? MarkerId(
-                                              'car#${element['id']}#${element['vehicle_type_icon']}#0')
-                                          : (element['is_available'] == true &&
-                                                  element['is_active'] == 1)
-                                              ? MarkerId(
-                                                  'car#${element['id']}#${element['vehicle_type_icon']}#1')
-                                              : MarkerId(
-                                                  'car#${element['id']}#${element['vehicle_type_icon']}#2'),
-                                      rotation: double.parse(
-                                          element['bearing'].toString()),
-                                      position: LatLng(
-                                          element['l'][0], element['l'][1]),
-                                      anchor: const Offset(0.5, 0.5),
-                                      icon: (element['vehicle_type_icon'] ==
-                                              'motor_bike')
+                                if (element['is_active'] == 0 && offlineicon != null) {
+                                  if (myMarkers.where((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}')).isEmpty) {
+                                    myMarkers.add(
+                                      Marker( 
+                                        markerId: (element['is_active'] == 0)
+                                              ? MarkerId( 'car#${element['id']}#${element['vehicle_type_icon']}#0')
+                                              : (element['is_available'] == true && element['is_active'] == 1)
+                                                ? MarkerId('car#${element['id']}#${element['vehicle_type_icon']}#1')
+                                                : MarkerId('car#${element['id']}#${element['vehicle_type_icon']}#2'),
+                                        rotation: double.parse(element['bearing'].toString()),
+                                        position: LatLng(element['l'][0], element['l'][1]),
+                                        anchor: const Offset(0.5, 0.5),
+                                        icon: (element['vehicle_type_icon'] == 'motor_bike')
                                           ? offlinebikeicon
                                           : (element['vehicle_type_icon'] ==
                                                   'taxi')
@@ -1830,62 +2492,28 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                               : offlinedeliveryicon,
                                     ));
                                   } else if (_controller != null) {
-                                    if (myMarkers
-                                                .lastWhere((e) => e.markerId
-                                                    .toString()
-                                                    .contains(
-                                                        'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                                .position
-                                                .latitude !=
-                                            element['l'][0] ||
-                                        myMarkers
-                                                .lastWhere((e) => e.markerId
-                                                    .toString()
-                                                    .contains(
-                                                        'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                                .position
-                                                .longitude !=
-                                            element['l'][1]) {
-                                      var dist = calculateDistance(
-                                          myMarkers
-                                              .lastWhere((e) => e.markerId
-                                                  .toString()
-                                                  .contains(
-                                                      'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                              .position
-                                              .latitude,
-                                          myMarkers
-                                              .lastWhere((e) => e.markerId
-                                                  .toString()
-                                                  .contains(
-                                                      'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                              .position
-                                              .longitude,
-                                          element['l'][0],
-                                          element['l'][1]);
+                                    if (myMarkers.lastWhere((e) => e.markerId.toString()
+                                      .contains('car#${element['id']}#${element['vehicle_type_icon']}')).position.latitude !=element['l'][0] ||
+                                        myMarkers.lastWhere((e) => e.markerId.toString()
+                                        .contains('car#${element['id']}#${element['vehicle_type_icon']}')).position.longitude !=element['l'][1]) {
+                                      var dist = calculateDistance(myMarkers.lastWhere((e) => e.markerId.toString()
+                                          .contains('car#${element['id']}#${element['vehicle_type_icon']}')).position.latitude,
+                                          myMarkers.lastWhere((e) => e.markerId.toString()
+                                          .contains('car#${element['id']}#${element['vehicle_type_icon']}')).position.longitude, element['l'][0], element['l'][1]);
                                       if (dist > 100 && _controller != null) {
-                                        animationController =
-                                            AnimationController(
-                                          duration: const Duration(
-                                              milliseconds:
-                                                  1500), //Animation duration of marker
-
+                                        // print('TODO: FM 1003 Animate car + de 100 mtrs');
+                                        animationController = AnimationController(
+                                          duration: const Duration( milliseconds: 1500), //Animation duration of marker
                                           vsync: this, //From the widget
                                         );
 
                                         animateCar(
                                             myMarkers
-                                                .lastWhere((e) => e.markerId
-                                                    .toString()
-                                                    .contains(
-                                                        'car#${element['id']}#${element['vehicle_type_icon']}'))
+                                                .lastWhere((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}'))
                                                 .position
                                                 .latitude,
                                             myMarkers
-                                                .lastWhere((e) => e.markerId
-                                                    .toString()
-                                                    .contains(
-                                                        'car#${element['id']}#${element['vehicle_type_icon']}'))
+                                                .lastWhere((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}'))
                                                 .position
                                                 .longitude,
                                             element['l'][0],
@@ -1894,11 +2522,9 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                             this,
                                             _controller,
                                             'car#${element['id']}#${element['vehicle_type_icon']}',
-                                            (element['vehicle_type_icon'] ==
-                                                    'motor_bike')
+                                            (element['vehicle_type_icon'] == 'motor_bike')
                                                 ? offlinebikeicon
-                                                : (element['vehicle_type_icon'] ==
-                                                        'taxi')
+                                                : (element['vehicle_type_icon'] == 'taxi')
                                                     ? offlineicon
                                                     : offlinedeliveryicon,
                                             element['vehicle_number'],
@@ -1907,46 +2533,27 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                     }
                                   }
                                 } else {
-                                  if (myMarkers
-                                      .where((e) => e.markerId.toString().contains(
-                                          'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                      .isNotEmpty) {
-                                    myMarkers.removeWhere((e) => e.markerId
-                                        .toString()
-                                        .contains(
-                                            'car#${element['id']}#${element['vehicle_type_icon']}'));
+                                  if (myMarkers.where((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}')).isNotEmpty) {
+                                    myMarkers.removeWhere((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}'));
                                   }
                                 }
                               }
-                            } else if (filtericon == 2 &&
-                                userDetails['role'] == 'owner' &&
-                                onlineicon != null) {
-                              if (element['is_available'] == false &&
-                                  element['is_active'] == 1) {
-                                if (myMarkers
-                                    .where((e) => e.markerId.toString().contains(
-                                        'car#${element['id']}#${element['vehicle_type_icon']}'))
-                                    .isEmpty) {
-                                  myMarkers.add(Marker(
+                            } else if (filtericon == 2 && userDetails['role'] == 'owner' && onlineicon != null) {
+                              if (element['is_available'] == false && element['is_active'] == 1) {
+                                if (myMarkers.where((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}')).isEmpty) {
+                                  myMarkers.add(
+                                    Marker(
                                     markerId: (element['is_active'] == 0)
-                                        ? MarkerId(
-                                            'car#${element['id']}#${element['vehicle_type_icon']}#0')
-                                        : (element['is_available'] == true &&
-                                                element['is_active'] == 1)
-                                            ? MarkerId(
-                                                'car#${element['id']}#${element['vehicle_type_icon']}#1')
-                                            : MarkerId(
-                                                'car#${element['id']}#${element['vehicle_type_icon']}#2'),
-                                    rotation: double.parse(
-                                        element['bearing'].toString()),
-                                    position: LatLng(
-                                        element['l'][0], element['l'][1]),
+                                        ? MarkerId('car#${element['id']}#${element['vehicle_type_icon']}#0')
+                                        : (element['is_available'] == true && element['is_active'] == 1)
+                                            ? MarkerId('car#${element['id']}#${element['vehicle_type_icon']}#1')
+                                            : MarkerId('car#${element['id']}#${element['vehicle_type_icon']}#2'),
+                                    rotation: double.parse(element['bearing'].toString()),
+                                    position: LatLng(element['l'][0], element['l'][1]),
                                     anchor: const Offset(0.5, 0.5),
-                                    icon: (element['vehicle_type_icon'] ==
-                                            'motor_bike')
+                                    icon: (element['vehicle_type_icon'] == 'motor_bike')
                                         ? onridebikeicon
-                                        : (element['vehicle_type_icon'] ==
-                                                'taxi')
+                                        : (element['vehicle_type_icon'] == 'taxi')
                                             ? onrideicon
                                             : onridedeliveryicon,
                                   ));
@@ -1985,6 +2592,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                         element['l'][0],
                                         element['l'][1]);
                                     if (dist > 100 && _controller != null) {
+                                      // print('TODO: FM 1004 Animate car + de 100 mtrs');
                                       animationController = AnimationController(
                                         duration: const Duration(
                                             milliseconds:
@@ -2104,6 +2712,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                         element['l'][0],
                                         element['l'][1]);
                                     if (dist > 100 && _controller != null) {
+                                      // print('TODO: FM 1005 Animate car + de 100 mtrs');
                                       animationController = AnimationController(
                                         duration: const Duration(
                                             milliseconds:
@@ -2159,14 +2768,10 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                             }
                           }
                         } else {
-                          if (myMarkers
-                              .where((e) => e.markerId.toString().contains(
-                                  'car#${element['id']}#${element['vehicle_type_icon']}'))
-                              .isNotEmpty) {
+                          if (myMarkers.where((e) => e.markerId.toString().contains('car#${element['id']}#${element['vehicle_type_icon']}')).isNotEmpty) {
                             myMarkers.removeWhere((e) => e.markerId
                                 .toString()
-                                .contains(
-                                    'car#${element['id']}#${element['vehicle_type_icon']}'));
+                                .contains('car#${element['id']}#${element['vehicle_type_icon']}'));
                           }
                         }
                       }
@@ -2221,7 +2826,12 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                   setState(() {
                                                     state = '';
                                                   });
-                                                  getLocs();
+
+                                                  /**
+                                                   * FIXME: FM 
+                                                   */
+                                                  // getLocs();
+                                                  getLocsImproved();
                                                 },
                                                 child: Text(
                                                   languages[choosenLanguage]
@@ -2450,82 +3060,50 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                     width: media.width * 1,
                                                     //google maps
                                                     child: (mapType == 'google')
-                                                        ? StreamBuilder<
-                                                            List<Marker>>(
-                                                            stream:
-                                                                mapMarkerStream,
-                                                            builder: (context,
-                                                                snapshot) {
+                                                        ? StreamBuilder<List<Marker>>(
+                                                            stream: mapMarkerStream,
+                                                            builder: (context, snapshot) {
+                                                              // print('TODO: FM Stream Google Maps');
                                                               return GoogleMap(
                                                                 padding: EdgeInsets.only(
-                                                                    bottom:
-                                                                        media.width *
-                                                                            1,
-                                                                    top: media.height *
-                                                                            0.1 +
-                                                                        MediaQuery.of(context)
-                                                                            .padding
-                                                                            .top),
-                                                                onMapCreated:
-                                                                    _onMapCreated,
-                                                                initialCameraPosition:
-                                                                    CameraPosition(
-                                                                  target: (centerPosition ==
-                                                                          null)
-                                                                      ? _center
-                                                                      : centerPosition,
+                                                                    bottom: media.width * 1,
+                                                                    top: media.height * 0.1 + MediaQuery.of(context).padding.top
+                                                                  ),
+                                                                onMapCreated: _onMapCreated,
+                                                                initialCameraPosition: CameraPosition(
+                                                                  target: (centerPosition == null) ? _center : centerPosition,
                                                                   zoom: 11.0,
                                                                 ),
-                                                                markers: Set<
-                                                                        Marker>.from(
-                                                                    myMarkers),
-                                                                polylines:
-                                                                    polyline,
-                                                                minMaxZoomPreference:
-                                                                    const MinMaxZoomPreference(
-                                                                        0.0,
-                                                                        20.0),
-                                                                myLocationButtonEnabled:
-                                                                    false,
-                                                                compassEnabled:
-                                                                    false,
-                                                                buildingsEnabled:
-                                                                    false,
-                                                                zoomControlsEnabled:
-                                                                    false,
+                                                                markers: Set<Marker>.from(myMarkers),
+                                                                polylines: polyline,
+                                                                minMaxZoomPreference: const MinMaxZoomPreference(0.0, 20.0),
+                                                                myLocationButtonEnabled: false,
+                                                                compassEnabled: false,
+                                                                buildingsEnabled: false,
+                                                                zoomControlsEnabled: false,
                                                               );
                                                             },
                                                           )
-                                                        : StreamBuilder<
-                                                            List<Marker>>(
-                                                            stream:
-                                                                mapMarkerStream,
-                                                            builder: (context,
-                                                                snapshot) {
+                                                        : StreamBuilder<List<Marker>>(
+                                                            stream: mapMarkerStream,
+                                                            builder: (context, snapshot) {
+                                                              // TODO: FM Stream Open Streed Maps Map
+                                                              // print('TODO: FM Stream Open Streed Maps Map FALSE');
                                                               return fm.FlutterMap(
-                                                                mapController:
-                                                                    _fmController,
-                                                                options: fm
-                                                                    .MapOptions(
+                                                                mapController: _fmController,
+                                                                options: fm.MapOptions(
                                                                   onPositionChanged: (position, bool hasGesture) {
                                                                     if (hasGesture)
                                                                       _onCameraMoveStarted();
                                                                   },
-                                                                  initialCenter: currentPositionNew ??
-                                                                      const fmlt.LatLng(
-                                                                          -21.5355,
-                                                                          -64.7296),
-                                                                  initialZoom:
-                                                                      16,
-                                                                  onTap:
-                                                                      (P, L) {},
+                                                                  initialCenter: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
+                                                                  initialZoom: 16,
+                                                                  onTap: (P, L) {},
                                                                 ),
                                                                 children: [
                                                                   ColorFiltered(
-                                                                    colorFilter: themeProvider
-                                                                            .isDarkTheme
-                                                                        ? const ColorFilter
-                                                                            .matrix([
+                                                                    colorFilter: themeProvider.isDarkTheme
+                                                                        ? const ColorFilter.matrix([
                                                                             -1,
                                                                             0,
                                                                             0,
@@ -2549,23 +3127,17 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                           ])
                                                                         : const ColorFilter.mode(
                                                                             Colors.transparent,
-                                                                            BlendMode.multiply),
-                                                                    child: fm
-                                                                        .TileLayer(
+                                                                            BlendMode.multiply
+                                                                          ),
+                                                                    child: fm.TileLayer(
                                                                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                                                                       userAgentPackageName: 'com.example.app',
                                                                     ),
                                                                   ),
-                                                                  if (driverReq[
-                                                                          'accepted_at'] !=
-                                                                      null)
-                                                                    driverReq['is_driver_arrived'] ==
-                                                                                1 &&
-                                                                            driverReq['is_trip_start'] ==
-                                                                                0
-                                                                        ? Container()
-                                                                        : driverReq['is_trip_start'] ==
-                                                                                1
+                                                                  if (driverReq['accepted_at'] != null)
+                                                                    driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0 
+                                                                      ? Container()
+                                                                      : driverReq['is_trip_start'] == 1
                                                                             ? Container()
                                                                             : fm.PolylineLayer(
                                                                                 polylines: [
@@ -2576,14 +3148,9 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                                   ),
                                                                                 ],
                                                                               ),
-                                                                  if (endPoint !=
-                                                                      null)
-                                                                    if (driverReq[
-                                                                            'accepted_at'] !=
-                                                                        null)
-                                                                      if (driverReq[
-                                                                              'is_trip_start'] !=
-                                                                          1)
+                                                                  if (endPoint != null)
+                                                                    if (driverReq['accepted_at'] != null)
+                                                                      if (driverReq['is_trip_start'] != 1)
                                                                         fm.MarkerLayer(
                                                                           markers: [
                                                                             fm.Marker(
@@ -2716,23 +3283,17 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                             ],
                                                                           ),
                                                                         ),
+                                                                        /**
+                                                                         * TODO: FM marcardor en el mapa
+                                                                        */
                                                                       fm.Marker(
-                                                                        key: const ValueKey(
-                                                                            'driver_marker'), // <- Mantener la misma key
-                                                                        rotate:
-                                                                            true,
-                                                                        alignment:
-                                                                            Alignment.topCenter,
-                                                                        point: currentPositionNew ??
-                                                                            const fmlt.LatLng(-21.5355,
-                                                                                -64.7296),
-                                                                        width:
-                                                                            80,
-                                                                        height:
-                                                                            80,
-                                                                        child: Image.asset(themeProvider.isDarkTheme
-                                                                            ? 'assets/gifs/icon-driver2.gif'
-                                                                            : 'assets/gifs/icon-driver1.png'),
+                                                                        key: const ValueKey('driver_marker'), // <- Mantener la misma key
+                                                                        rotate: true,
+                                                                        alignment: Alignment.topCenter,
+                                                                        point: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
+                                                                        width: 80,
+                                                                        height: 80,
+                                                                        child: Image.asset(themeProvider.isDarkTheme ? 'assets/gifs/icon-driver2.gif' : 'assets/gifs/icon-driver1.png'),
                                                                       ),
                                                                     ],
                                                                   ),
@@ -2832,7 +3393,14 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                             _isLoading =
                                                                                 true;
                                                                           });
-                                                                          await getLocs();
+
+                                                                          /**
+                                                                           * FIXME: DEpreciatione
+                                                                           */
+                                                                          // await getLocs();
+                                                                          await getLocsImproved();
+
+                                                                          
                                                                           if (serviceEnabled ==
                                                                               true) {
                                                                             setState(() {
@@ -2883,28 +3451,30 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                         onTap:
                                                                             () async {
                                                                           _onFollowLocationPressed();
-                                                                          if (locationAllowed ==
-                                                                              true) {
-                                                                            if (mapType ==
-                                                                                'google') {
+                                                                          if (locationAllowed == true) {
+                                                                            if (mapType == 'google') {
                                                                               _controller?.animateCamera(CameraUpdate.newLatLngZoom(centerPosition!, 18.0));
                                                                             } else {
                                                                               // TODO: FM GPS Controller
+                                                                              // print('TODO FM Current LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
                                                                               _fmController.move(fmlt.LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude), _fmController.camera.zoom);
                                                                             }
                                                                           } else {
-                                                                            if (serviceEnabled ==
-                                                                                true) {
+                                                                            if (serviceEnabled == true) {
                                                                               setState(() {
                                                                                 _locationDenied = true;
                                                                               });
                                                                             } else {
                                                                               await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
-
                                                                               setState(() {
                                                                                 _isLoading = true;
                                                                               });
-                                                                              await getLocs();
+                                                                              /**
+                                                                               * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
+                                                                               */
+                                                                              // await getLocs();
+                                                                              await getLocsImproved();
+
                                                                               if (serviceEnabled == true) {
                                                                                 setState(() {
                                                                                   _locationDenied = true;
@@ -2947,135 +3517,94 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                         20,
                                                     child: InkWell(
                                                       onTap: () async {
-                                                        if (driverReq[
-                                                                'accepted_at'] ==
-                                                            null) {
+                                                        // print('BTN De Servio');
+                                                        /**
+                                                         * TODO: FM BTN De Servicio / Fuera de Servicio
+                                                         */
+                                                        if (driverReq['accepted_at'] == null) {
                                                           // Si las condiciones de ubicación están permitidas y el servicio está habilitado
-                                                          if (locationAllowed ==
-                                                                  true &&
-                                                              serviceEnabled ==
-                                                                  true) {
-                                                            SharedPreferences
-                                                                prefs =
-                                                                await SharedPreferences
-                                                                    .getInstance();
+                                                          if (locationAllowed == true && serviceEnabled == true) {
+                                                            SharedPreferences prefs = await SharedPreferences.getInstance();
                                                             setState(() {
                                                               _isLoading = true;
                                                             });
 
-                                                            var val =
-                                                                await driverStatus();
+                                                            var val = await driverStatus();
                                                             if (val == true) {
-                                                              if (userDetails[
-                                                                      'active'] ==
-                                                                  true) {
-                                                                FlutterBackgroundService()
-                                                                    .invoke(
-                                                                        'updateAppLifeState',
-                                                                        {
-                                                                      "AppLifeState":
-                                                                          true
-                                                                    });
-                                                                SharedPreferences
-                                                                    prefs =
-                                                                    await SharedPreferences
-                                                                        .getInstance();
-                                                                await prefs.setBool(
-                                                                    'estaActivo',
-                                                                    true);
-
+                                                              if (userDetails['active'] == true) {
+                                                                /**
+                                                                 * FIXME: FM - Reactivando servicio
+                                                                 */
+                                                                FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": true });
+                                                                SharedPreferences prefs = await SharedPreferences.getInstance();
+                                                                await prefs.setBool('estaActivo', true);
                                                                 await verificarDeudas();
+                                                                await _initializeLocationImproved(opcion: 2);
                                                               } else {
-                                                                await prefs.setBool(
-                                                                    'estaActivo',
-                                                                    false);
+                                                                /**
+                                                                 * FIXME: FM - Deteniendo servicio
+                                                                 */
+                                                                await prefs.setBool('estaActivo', false);
                                                                 if (userDetails[ 'active'] == false) {
                                                                   await detenerUbicacion();
                                                                   // Detén otros recursos aquí
                                                                 }
                                                               }
                                                             }
-                                                            if (val ==
-                                                                'logout') {
+                                                            if (val == 'logout') {
                                                               navigateLogout();
                                                             }
                                                             setState(() {
-                                                              _isLoading =
-                                                                  false;
+                                                              _isLoading = false;
                                                             });
-                                                          } else if (locationAllowed ==
-                                                                  true &&
-                                                              serviceEnabled ==
-                                                                  false) {
+                                                          } else if (locationAllowed == true && serviceEnabled == false) {
                                                             // Pedir ubicación si no está habilitada
-                                                            await geolocator
-                                                                    .Geolocator
-                                                                .getCurrentPosition(
-                                                              desiredAccuracy:
-                                                                  geolocator
-                                                                      .LocationAccuracy
-                                                                      .bestForNavigation,
+                                                            await geolocator.Geolocator.getCurrentPosition(
+                                                              desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
                                                             );
-
-                                                            if (await geolocator
-                                                                .GeolocatorPlatform
-                                                                .instance
-                                                                .isLocationServiceEnabled()) {
-                                                              serviceEnabled =
-                                                                  true;
+                                                            if (await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled()) {
+                                                              serviceEnabled = true;
                                                               setState(() {
-                                                                _isLoading =
-                                                                    true;
+                                                                _isLoading = true;
                                                               });
 
                                                               // Llama a verificarDeudas aquí también
                                                               await verificarDeudas();
 
-                                                              var val =
-                                                                  await driverStatus();
-                                                              if (val ==
-                                                                  'logout') {
+                                                              var val = await driverStatus();
+                                                              if (val == 'logout') {
                                                                 navigateLogout();
                                                               }
                                                               setState(() {
-                                                                _isLoading =
-                                                                    false;
+                                                                _isLoading = false;
                                                               });
                                                             }
                                                           } else {
                                                             // Caso en que el servicio está habilitado
-                                                            if (serviceEnabled ==
-                                                                true) {
+                                                            if (serviceEnabled == true) {
                                                               setState(() {
-                                                                makeOnline =
-                                                                    true;
-                                                                _locationDenied =
-                                                                    true;
+                                                                makeOnline = true;
+                                                                _locationDenied = true;
                                                               });
                                                             } else {
                                                               // Intentar obtener la posición si el servicio no está habilitado
-                                                              await geolocator
-                                                                      .Geolocator
-                                                                  .getCurrentPosition(
-                                                                desiredAccuracy:
-                                                                    geolocator
-                                                                        .LocationAccuracy
-                                                                        .bestForNavigation,
+                                                              await geolocator.Geolocator.getCurrentPosition(
+                                                                desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
                                                               );
 
                                                               setState(() {
-                                                                _isLoading =
-                                                                    true;
+                                                                _isLoading = true;
                                                               });
-                                                              await getLocs();
+                                                              /**
+                                                               * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
+                                                               */
+                                                              // await getLocs();
+                                                              await getLocsImproved();
 
-                                                              if (serviceEnabled ==
-                                                                  true) {
+                                                              if (serviceEnabled == true) {
                                                                 setState(() {
-                                                                  makeOnline =
-                                                                      true;
-                                                                  _locationDenied =
-                                                                      true;
+                                                                  makeOnline = true;
+                                                                  _locationDenied = true;
                                                                 });
                                                               }
                                                             }
@@ -3608,105 +4137,88 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                           ))
                                                       : Container(),
 
+                                                  /**
+                                                   * FIXME: FM - BTN Mi Ubicacion
+                                                   */
                                                   //*Boton de posicionamiento
                                                   (driverReq['accepted_at'] !=
                                                           null)
                                                       ? Container()
                                                       : ValueListenableBuilder(
-                                                          valueListenable:
-                                                              bottomSheetOffset,
-                                                          builder: (context,
-                                                              offset, child) {
-                                                            double
-                                                                bottomPadding =
-                                                                500 * (offset);
+                                                          valueListenable: bottomSheetOffset,
+                                                          builder: (context, offset, child) {
+                                                            double bottomPadding = 500 * (offset);
                                                             return AnimatedPositioned(
-                                                              duration:
-                                                                  const Duration(
-                                                                      milliseconds:
-                                                                          300),
-                                                              bottom:
-                                                                  bottomPadding,
+                                                              duration: const Duration(milliseconds: 300),
+                                                              bottom: bottomPadding,
                                                               right: 20,
                                                               child: Container(
                                                                 decoration: BoxDecoration(
                                                                     boxShadow: [
                                                                       BoxShadow(
-                                                                          blurRadius:
-                                                                              2,
-                                                                          color: Colors.black.withOpacity(
-                                                                              0.2),
-                                                                          spreadRadius:
-                                                                              2)
+                                                                          blurRadius: 2,
+                                                                          color: Colors.black.withOpacity(0.2),
+                                                                          spreadRadius: 2)
                                                                     ],
-                                                                    color: themeProvider
-                                                                            .isDarkTheme
+                                                                    color: themeProvider.isDarkTheme
                                                                         ? newRedColor
                                                                         : page,
-                                                                    borderRadius:
-                                                                        BorderRadius.circular(media.width *
-                                                                            0.02)),
+                                                                    borderRadius:BorderRadius.circular(media.width *0.02)),
                                                                 child: Material(
-                                                                  color: Colors
-                                                                      .transparent,
-                                                                  child:
-                                                                      InkWell(
-                                                                    onTap:
-                                                                        () async {
-                                                                      _onFollowLocationPressed();
-                                                                      if (locationAllowed ==
-                                                                          true) {
-                                                                        // _fmController.move(fmlt.LatLng(newPosition!.latitude, newPosition!.longitude), 17);
-                                                                        _fmController.move(
-                                                                            currentPositionNew ??
-                                                                                const fmlt.LatLng(-21.5355, -64.7296),
-                                                                            17);
-                                                                      } else {
-                                                                        if (serviceEnabled ==
-                                                                            true) {
-                                                                          setState(
-                                                                              () {
-                                                                            _locationDenied =
-                                                                                true;
-                                                                          });
-                                                                        } else {
-                                                                          await geolocator.Geolocator.getCurrentPosition(
-                                                                              desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
+                                                                  color: Colors.transparent,
+                                                                  child: InkWell(
+                                                                    onTap: () async {
+                                                                      /**
+                                                                       * FIXME: FM - BTN Mi Ubicacion
+                                                                       */
+                                                                      // _onFollowLocationPressed();
+                                                                      // if (locationAllowed == true) {
+                                                                      //   // _fmController.move(fmlt.LatLng(newPosition!.latitude, newPosition!.longitude), 17);
+                                                                      //   print('TODO: FM Current GPS Position LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
+                                                                      //   _fmController.move(currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296), 17);
+                                                                      // } else {
+                                                                      //   if (serviceEnabled == true) {
+                                                                      //     setState(() {
+                                                                      //       _locationDenied = true;
+                                                                      //     });
+                                                                      //   } else {
+                                                                      //     await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
+                                                                      //     setState(() {
+                                                                      //       _isLoading = true;
+                                                                      //     });
+                                                                      //     await getLocs();
+                                                                      //     if (serviceEnabled == true) {
+                                                                      //       setState(() {
+                                                                      //         _locationDenied = true;
+                                                                      //       });
+                                                                      //     }
+                                                                      //   }
+                                                                      // }
 
-                                                                          setState(
-                                                                              () {
-                                                                            _isLoading =
-                                                                                true;
-                                                                          });
-                                                                          await getLocs();
-                                                                          if (serviceEnabled ==
-                                                                              true) {
-                                                                            setState(() {
-                                                                              _locationDenied = true;
-                                                                            });
-                                                                          }
+                                                                      _onFollowLocationPressed();
+                                                                      if (locationAllowed == true && _areIconsReady()) {
+                                                                        await updateMarkersAndMap();
+                                                                      } else {
+                                                                        if (!_areIconsReady()) {
+                                                                          await _loadMarkerIcons();
                                                                         }
+                                                                        // ... resto del código de manejo de permisos
+                                                                        // restartCurrentLocation();
+                                                                        restartCurrentLocationImproved();
                                                                       }
                                                                     },
                                                                     child:
                                                                         SizedBox(
-                                                                      height:
-                                                                          media.width *
-                                                                              0.1,
-                                                                      width: media
-                                                                              .width *
-                                                                          0.1,
-
+                                                                      height:media.width *0.1,
+                                                                      width: media.width *0.1,
                                                                       // alignment:
                                                                       //     Alignment.center,
                                                                       child: Icon(
-                                                                          Icons
-                                                                              .my_location_sharp,
+                                                                          Icons.my_location_sharp,
                                                                           color: themeProvider.isDarkTheme
                                                                               ? page
                                                                               : newRedColor,
-                                                                          size: media.width *
-                                                                              0.068),
+                                                                          size: media.width * 0.068),
                                                                     ),
                                                                   ),
                                                                 ),
@@ -3715,43 +4227,61 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                           }),
 
                                                   //*Boton de viajes disponibles
-                                                  (driverReq['accepted_at'] !=
-                                                          null)
+                                                  /**
+                                                   * TODO: FM Reubicar Maker
+                                                   */
+                                                  (driverReq['accepted_at'] !=null)
                                                       ? Container()
                                                       : ValueListenableBuilder(
-                                                          valueListenable:
-                                                              bottomSheetOffset,
-                                                          builder: (context,
-                                                              offset, child) {
-                                                            double
-                                                                bottomPadding =
-                                                                500 * (offset);
+                                                          valueListenable:bottomSheetOffset,
+                                                          builder: (context,offset, child) {
+                                                            double bottomPadding = 500 * (offset);
                                                             return AnimatedPositioned(
-                                                              duration:
-                                                                  const Duration(
-                                                                      milliseconds:
-                                                                          300),
-                                                              bottom:
-                                                                  bottomPadding,
+                                                              duration: const Duration(milliseconds: 300),
+                                                              bottom: bottomPadding,
                                                               left: 20,
-                                                              child:
-                                                                  BotonMostrarViajesDisponibles(
+                                                              child: BotonMostrarViajesDisponibles(
                                                                 onTap: () {
                                                                   setState(() {
-                                                                    showRequestsOverlay =
-                                                                        true;
-                                                                    showLocationRide =
-                                                                        false;
-                                                                    mostrarRutaDobleTap =
-                                                                        false;
-                                                                    dropProvider
-                                                                            .mostrardDibujadoDestino =
-                                                                        false;
+                                                                    showRequestsOverlay = true;
+                                                                    showLocationRide = false;
+                                                                    mostrarRutaDobleTap = false;
+                                                                    dropProvider.mostrardDibujadoDestino = false;
                                                                   });
                                                                 },
-                                                                numViajesDis:
-                                                                    '${requestMetas.length}',
+                                                                numViajesDis: '${requestMetas.length}',
                                                               ),
+                                                            );
+                                                          },
+                                                        ),
+                                                  /**
+                                                   * FIXME: FM - Progress Bar
+                                                   */
+                                                  // (driverReq['accepted_at'] !=null && _isCameraFollowing)
+                                                  (_isCameraFollowing)
+                                                      ? Container()
+                                                      : ValueListenableBuilder(
+                                                          valueListenable:bottomSheetOffset,
+                                                          builder: (context, offset, child) {
+                                                            double bottomPadding = 460 * (offset);
+                                                            return AnimatedPositioned(
+                                                              duration: const Duration(milliseconds: 300),
+                                                              bottom: bottomPadding,
+                                                              width: media.width * 0.9,
+                                                              child: Column(
+                                                                  spacing: 16.0,
+                                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                                  children: <Widget>[
+                                                                    LinearProgressIndicator(
+                                                                      value: _currentProgress,
+                                                                      backgroundColor: isDarkTheme 
+                                                                        ? Colors.grey[800] 
+                                                                        : Colors.grey[300],
+                                                                      valueColor: AlwaysStoppedAnimation<Color>(newRedColor),
+                                                                      minHeight: 6,
+                                                                    ),
+                                                                  ],
+                                                                ),
                                                             );
                                                           },
                                                         ),
@@ -3759,1116 +4289,74 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                   Positioned(
                                                     bottom: 0,
                                                     child: BottomCardSheet(
-                                                      bottomSheetOffset:
-                                                          bottomSheetOffset,
+                                                      bottomSheetOffset: bottomSheetOffset,
                                                     ),
                                                   ),
-                                                  //*Sheet carreras entrantes
-                                                  // Positioned(
-                                                  //   bottom: 0,
-                                                  //   child: Column(
-                                                  //     crossAxisAlignment:
-                                                  //         CrossAxisAlignment
-                                                  //             .end,
-                                                  //     children: [
-                                                  //       (driverReq.isNotEmpty &&
-                                                  //               driverReq[
-                                                  //                       'is_trip_start'] ==
-                                                  //                   1)
-                                                  //           ? InkWell(
-                                                  //               onTap:
-                                                  //                   () async {
-                                                  //                 setState(
-                                                  //                     () {
-                                                  //                   showSos =
-                                                  //                       true;
-                                                  //                 });
-                                                  //               },
-                                                  //               child:
-                                                  //                   Container(
-                                                  //                 height:
-                                                  //                     media.width *
-                                                  //                         0.1,
-                                                  //                 width: media
-                                                  //                         .width *
-                                                  //                     0.1,
-                                                  //                 decoration: BoxDecoration(
-                                                  //                     boxShadow: [
-                                                  //                       BoxShadow(
-                                                  //                           blurRadius: 2,
-                                                  //                           color: Colors.black.withOpacity(0.2),
-                                                  //                           spreadRadius: 2)
-                                                  //                     ],
-                                                  //                     color:
-                                                  //                         buttonColor,
-                                                  //                     borderRadius:
-                                                  //                         BorderRadius.circular(media.width * 0.02)),
-                                                  //                 alignment:
-                                                  //                     Alignment
-                                                  //                         .center,
-                                                  //                 child:
-                                                  //                     Text(
-                                                  //                   'SOS',
-                                                  //                   style: GoogleFonts.notoSans(
-                                                  //                       fontSize: media.width *
-                                                  //                           fourteen,
-                                                  //                       color:
-                                                  //                           page),
-                                                  //                 ),
-                                                  //               ))
-                                                  //           : Container(),
-                                                  //       const SizedBox(
-                                                  //         height: 20,
-                                                  //       ),
-                                                  //       (driverReq.isNotEmpty &&
-                                                  //               driverReq[
-                                                  //                       'accepted_at'] !=
-                                                  //                   null &&
-                                                  //               driverReq[
-                                                  //                       'drop_address'] !=
-                                                  //                   null)
-                                                  //           ? Row(
-                                                  //               children: [
-                                                  //                 (navigationtype ==
-                                                  //                         true)
-                                                  //                     ? Container(
-                                                  //                         padding: EdgeInsets.all(media.width * 0.02),
-                                                  //                         decoration: BoxDecoration(boxShadow: [
-                                                  //                           BoxShadow(blurRadius: 2, color: Colors.black.withOpacity(0.2), spreadRadius: 2)
-                                                  //                         ], color: page, borderRadius: BorderRadius.circular(media.width * 0.02)),
-                                                  //                         child: Row(
-                                                  //                           children: [
-                                                  //                             InkWell(
-                                                  //                               onTap: () {
-                                                  //                                 if (driverReq['is_trip_start'] == 0) {
-                                                  //                                   openMap(driverReq['pick_lat'], driverReq['pick_lng']);
-                                                  //                                 }
-                                                  //                                 if (tripStops.isEmpty && driverReq['is_trip_start'] != 0) {
-                                                  //                                   openMap(driverReq['drop_lat'], driverReq['drop_lng']);
-                                                  //                                 }
-                                                  //                               },
-                                                  //                               child: SizedBox(
-                                                  //                                 width: media.width * 00.07,
-                                                  //                                 child: Image.asset('assets/images/googlemaps.png', width: media.width * 0.05, fit: BoxFit.contain),
-                                                  //                               ),
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               width: media.width * 0.02,
-                                                  //                             ),
-                                                  //                             InkWell(
-                                                  //                               onTap: () {
-                                                  //                                 if (driverReq['is_trip_start'] == 0) {
-                                                  //                                   openWazeMap(driverReq['pick_lat'], driverReq['pick_lng']);
-                                                  //                                 }
-                                                  //                                 if (tripStops.isEmpty && driverReq['is_trip_start'] != 0) {
-                                                  //                                   openWazeMap(driverReq['drop_lat'], driverReq['drop_lng']);
-                                                  //                                 }
-                                                  //                               },
-                                                  //                               child: SizedBox(
-                                                  //                                 width: media.width * 00.08,
-                                                  //                                 child: Image.asset('assets/images/waze.png', width: media.width * 0.05, fit: BoxFit.contain),
-                                                  //                               ),
-                                                  //                             ),
-                                                  //                           ],
-                                                  //                         ),
-                                                  //                       )
-                                                  //                     : Container(),
-                                                  //                 SizedBox(
-                                                  //                   width: media.width *
-                                                  //                       0.01,
-                                                  //                 ),
-                                                  //                 InkWell(
-                                                  //                   onTap:
-                                                  //                       () async {
-                                                  //                     if (userDetails['enable_vase_map'] ==
-                                                  //                         '1') {
-                                                  //                       if (navigationtype ==
-                                                  //                           false) {
-                                                  //                         if (driverReq['is_trip_start'] == 0) {
-                                                  //                           setState(() {
-                                                  //                             navigationtype = true;
-                                                  //                           });
-                                                  //                         } else if (tripStops.isNotEmpty) {
-                                                  //                           setState(() {
-                                                  //                             _tripOpenMap = true;
-                                                  //                           });
-                                                  //                         } else {
-                                                  //                           setState(() {
-                                                  //                             navigationtype = true;
-                                                  //                           });
-                                                  //                         }
-                                                  //                       } else {
-                                                  //                         setState(() {
-                                                  //                           navigationtype = false;
-                                                  //                         });
-                                                  //                       }
-                                                  //                     } else {
-                                                  //                       if (driverReq['is_trip_start'] ==
-                                                  //                           0) {
-                                                  //                         openMap(driverReq['pick_lat'], driverReq['pick_lng']);
-                                                  //                       }
-                                                  //                       if (tripStops.isEmpty &&
-                                                  //                           driverReq['is_trip_start'] != 0) {
-                                                  //                         openMap(driverReq['drop_lat'], driverReq['drop_lng']);
-                                                  //                       }
-                                                  //                     }
-                                                  //                   },
-                                                  //                   child: Container(
-                                                  //                       height: media.width *
-                                                  //                           0.1,
-                                                  //                       width: media.width *
-                                                  //                           0.1,
-                                                  //                       decoration:
-                                                  //                           BoxDecoration(boxShadow: [
-                                                  //                         BoxShadow(blurRadius: 2, color: Colors.black.withOpacity(0.2), spreadRadius: 2)
-                                                  //                       ], color: page, borderRadius: BorderRadius.circular(media.width * 0.02)),
-                                                  //                       alignment: Alignment.center,
-                                                  //                       child: Image.asset('assets/images/locationFind.png', width: media.width * 0.06, color: textColor)),
-                                                  //                 ),
-                                                  //               ],
-                                                  //             )
-                                                  //           : Container(),
-                                                  //       const SizedBox(
-                                                  //           height: 20),
-                                                  //       SizedBox(height: media.width * 0.40),
-                                                  //       (choosenRide.isNotEmpty && driverReq.isEmpty)
-                                                  //           ? Column(
-                                                  //               children: [
-                                                  //                 Container(
-                                                  //                   padding: const EdgeInsets
-                                                  //                       .fromLTRB(
-                                                  //                       0,
-                                                  //                       0,
-                                                  //                       0,
-                                                  //                       0),
-                                                  //                   width: media.width *
-                                                  //                       0.9,
-                                                  //                   decoration: BoxDecoration(
-                                                  //                       borderRadius:
-                                                  //                           BorderRadius.circular(10),
-                                                  //                       color: page,
-                                                  //                       boxShadow: [
-                                                  //                         BoxShadow(blurRadius: 2, color: Colors.black.withOpacity(0.2), spreadRadius: 2)
-                                                  //                       ]),
-                                                  //                   child:
-                                                  //                       Column(
-                                                  //                     crossAxisAlignment:
-                                                  //                         CrossAxisAlignment.start,
-                                                  //                     mainAxisAlignment:
-                                                  //                         MainAxisAlignment.spaceBetween,
-                                                  //                     children: [
-                                                  //                       Container(
-                                                  //                         padding: EdgeInsets.fromLTRB(media.width * 0.05, media.width * 0.02, media.width * 0.05, media.width * 0.05),
-                                                  //                         child: Column(
-                                                  //                           crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                           children: [
-                                                  //                             Row(
-                                                  //                               children: [
-                                                  //                                 Container(
-                                                  //                                   height: media.width * 0.15,
-                                                  //                                   width: media.width * 0.15,
-                                                  //                                   decoration: BoxDecoration(shape: BoxShape.circle, image: DecorationImage(image: NetworkImage(choosenRide[0]['user_img']), fit: BoxFit.cover)),
-                                                  //                                 ),
-                                                  //                                 SizedBox(width: media.width * 0.05),
-                                                  //                                 Expanded(
-                                                  //                                   child: SizedBox(
-                                                  //                                     height: media.width * 0.2,
-                                                  //                                     child: Column(
-                                                  //                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                       mainAxisAlignment: MainAxisAlignment.spaceAround,
-                                                  //                                       children: [
-                                                  //                                         Text(
-                                                  //                                           choosenRide[0]['user_name'],
-                                                  //                                           maxLines: 1,
-                                                  //                                           overflow: TextOverflow.ellipsis,
-                                                  //                                           style: GoogleFonts.notoSans(fontSize: media.width * eighteen, color: textColor),
-                                                  //                                         ),
-                                                  //                                       ],
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                                 ),
-                                                  //                                 MyText(
-                                                  //                                   text: '${choosenRide[0]['km']} km',
-                                                  //                                   // maxLines: 1,
-                                                  //                                   size: media.width * sixteen,
-                                                  //                                 ),
-                                                  //                               ],
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.02,
-                                                  //                             ),
-                                                  //                             Row(
-                                                  //                               mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                               children: [
-                                                  //                                 Container(
-                                                  //                                   height: media.width * 0.05,
-                                                  //                                   width: media.width * 0.05,
-                                                  //                                   alignment: Alignment.center,
-                                                  //                                   decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.green),
-                                                  //                                   child: Container(
-                                                  //                                     height: media.width * 0.025,
-                                                  //                                     width: media.width * 0.025,
-                                                  //                                     decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.8)),
-                                                  //                                   ),
-                                                  //                                 ),
-                                                  //                                 SizedBox(
-                                                  //                                   width: media.width * 0.06,
-                                                  //                                 ),
-                                                  //                                 Expanded(
-                                                  //                                   child: MyText(
-                                                  //                                     text: choosenRide[0]['pick_address'],
-                                                  //                                     // maxLines: 1,
-                                                  //                                     size: media.width * twelve,
-                                                  //                                   ),
-                                                  //                                 ),
-                                                  //                               ],
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.03,
-                                                  //                             ),
-                                                  //                             Row(
-                                                  //                               mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                               children: [
-                                                  //                                 Container(
-                                                  //                                   height: media.width * 0.06,
-                                                  //                                   width: media.width * 0.06,
-                                                  //                                   alignment: Alignment.center,
-                                                  //                                   decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red.withOpacity(0.1)),
-                                                  //                                   child: Icon(
-                                                  //                                     Icons.location_on_outlined,
-                                                  //                                     color: const Color(0xFFFF0000),
-                                                  //                                     size: media.width * eighteen,
-                                                  //                                   ),
-                                                  //                                 ),
-                                                  //                                 SizedBox(
-                                                  //                                   width: media.width * 0.05,
-                                                  //                                 ),
-                                                  //                                 Expanded(
-                                                  //                                   child: MyText(
-                                                  //                                     text: choosenRide[choosenRide.length - 1]['drop_address'],
-                                                  //                                     // maxLines: 1,
-                                                  //                                     size: media.width * twelve,
-                                                  //                                   ),
-                                                  //                                 ),
-                                                  //                               ],
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.025,
-                                                  //                             ),
-                                                  //                             (choosenRide[0]['is_luggage_available'] == true || choosenRide[0]['is_pet_available'] == true)
-                                                  //                                 ? Column(
-                                                  //                                     children: [
-                                                  //                                       Row(
-                                                  //                                         children: [
-                                                  //                                           MyText(
-                                                  //                                             text: languages[choosenLanguage]['text_ride_preference'] + ' :- ',
-                                                  //                                             size: media.width * twelve,
-                                                  //                                             fontweight: FontWeight.w600,
-                                                  //                                           ),
-                                                  //                                           SizedBox(
-                                                  //                                             width: media.width * 0.025,
-                                                  //                                           ),
-                                                  //                                           if (choosenRide[0]['is_pet_available'] == true)
-                                                  //                                             Row(
-                                                  //                                               children: [
-                                                  //                                                 Icon(Icons.pets, size: media.width * 0.035, color: theme),
-                                                  //                                                 SizedBox(
-                                                  //                                                   width: media.width * 0.01,
-                                                  //                                                 ),
-                                                  //                                                 MyText(
-                                                  //                                                   text: languages[choosenLanguage]['text_pets'],
-                                                  //                                                   size: media.width * twelve,
-                                                  //                                                   fontweight: FontWeight.w600,
-                                                  //                                                   color: theme,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                           if (choosenRide[0]['is_luggage_available'] == true && choosenRide[0]['is_pet_available'] == true)
-                                                  //                                             MyText(
-                                                  //                                               text: ', ',
-                                                  //                                               size: media.width * fourteen,
-                                                  //                                               fontweight: FontWeight.w600,
-                                                  //                                               color: theme,
-                                                  //                                             ),
-                                                  //                                           if (choosenRide[0]['is_luggage_available'] == true)
-                                                  //                                             Row(
-                                                  //                                               children: [
-                                                  //                                                 // Icon(Icons.luggage, size: media.width * 0.05, color: theme),
-                                                  //                                                 SizedBox(
-                                                  //                                                   height: media.width * 0.035,
-                                                  //                                                   width: media.width * 0.05,
-                                                  //                                                   child: Image.asset(
-                                                  //                                                     'assets/images/luggages.png',
-                                                  //                                                     color: theme,
-                                                  //                                                   ),
-                                                  //                                                 ),
-                                                  //                                                 SizedBox(
-                                                  //                                                   width: media.width * 0.01,
-                                                  //                                                 ),
-                                                  //                                                 MyText(
-                                                  //                                                   text: languages[choosenLanguage]['text_luggages'],
-                                                  //                                                   size: media.width * twelve,
-                                                  //                                                   fontweight: FontWeight.w600,
-                                                  //                                                   color: theme,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                         ],
-                                                  //                                       ),
-                                                  //                                     ],
-                                                  //                                   )
-                                                  //                                 : Container(),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.02,
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               child: Row(
-                                                  //                                 children: [
-                                                  //                                   InkWell(
-                                                  //                                     onTap: () {
-                                                  //                                       if ((bidText.text.isEmpty && int.parse(choosenRide[0]['price'].toString()) > ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))) || (bidText.text.isNotEmpty && int.parse(bidText.text.toString()) > ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString())))) {
-                                                  //                                         setState(() {
-                                                  //                                           bidText.text = (bidText.text.isEmpty)
-                                                  //                                               ? (choosenRide[0]['price'].toString().contains('.'))
-                                                  //                                                   ? (double.parse(choosenRide[0]['price'].toString()) - ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toStringAsFixed(2)
-                                                  //                                                   : (int.parse(choosenRide[0]['price'].toString()) - ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toString()
-                                                  //                                               : (bidText.text.toString().contains('.'))
-                                                  //                                                   ? (double.parse(bidText.text.toString()) - ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toStringAsFixed(2)
-                                                  //                                                   : (int.parse(bidText.text.toString()) - ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toString();
-                                                  //                                         });
-                                                  //                                       }
-                                                  //                                     },
-                                                  //                                     child: Container(
-                                                  //                                       width: media.width * 0.2,
-                                                  //                                       alignment: Alignment.center,
-                                                  //                                       decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(media.width * 0.04)),
-                                                  //                                       padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                                       child: Text(
-                                                  //                                         // '-10',
-                                                  //                                         (userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? '-${double.parse(userDetails['bidding_amount_increase_or_decrease'].toString())}' : '-${int.parse(userDetails['bidding_amount_increase_or_decrease'].toString())}',
-                                                  //                                         style: GoogleFonts.notoSans(fontSize: media.width * fourteen, fontWeight: FontWeight.w600, color: page),
-                                                  //                                       ),
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                                   SizedBox(
-                                                  //                                     width: media.width * 0.4,
-                                                  //                                     child: TextField(
-                                                  //                                       textAlign: TextAlign.center,
-                                                  //                                       keyboardType: TextInputType.number,
-                                                  //                                       controller: bidText,
-                                                  //                                       decoration: InputDecoration(
-                                                  //                                         hintText: (choosenRide.isNotEmpty) ? choosenRide[0]['price'].toString() : '',
-                                                  //                                         hintStyle: GoogleFonts.notoSans(fontSize: media.width * sixteen, color: textColor),
-                                                  //                                         border: UnderlineInputBorder(borderSide: BorderSide(color: hintColor)),
-                                                  //                                       ),
-                                                  //                                       style: GoogleFonts.notoSans(fontSize: media.width * sixteen, color: textColor),
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                                   InkWell(
-                                                  //                                     onTap: () {
-                                                  //                                       setState(() {
-                                                  //                                         bidText.text = (bidText.text.isEmpty)
-                                                  //                                             ? (choosenRide[0]['price'].toString().contains('.'))
-                                                  //                                                 ? (double.parse(choosenRide[0]['price'].toString()) + ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toStringAsFixed(2)
-                                                  //                                                 : (int.parse(choosenRide[0]['price'].toString()) + ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toString()
-                                                  //                                             : (bidText.text.toString().contains('.'))
-                                                  //                                                 ? (double.parse(bidText.text.toString()) + ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toStringAsFixed(2)
-                                                  //                                                 : (int.parse(bidText.text.toString()) + ((userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? double.parse(userDetails['bidding_amount_increase_or_decrease'].toString()) : int.parse(userDetails['bidding_amount_increase_or_decrease'].toString()))).toString();
-                                                  //                                       });
-                                                  //                                     },
-                                                  //                                     child: Container(
-                                                  //                                       width: media.width * 0.2,
-                                                  //                                       alignment: Alignment.center,
-                                                  //                                       decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(media.width * 0.04)),
-                                                  //                                       padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                                       child: Text(
-                                                  //                                         // '+10',
-                                                  //                                         (userDetails['bidding_amount_increase_or_decrease'].toString().contains('.')) ? '+${double.parse(userDetails['bidding_amount_increase_or_decrease'].toString())}' : '+${int.parse(userDetails['bidding_amount_increase_or_decrease'].toString())}',
-                                                  //                                         style: GoogleFonts.notoSans(fontSize: media.width * fourteen, fontWeight: FontWeight.w600, color: page),
-                                                  //                                       ),
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                                 ],
-                                                  //                               ),
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.02,
-                                                  //                             ),
-                                                  //                             SizedBox(
-                                                  //                                 width: media.width * 0.9,
-                                                  //                                 child: Button(
-                                                  //                                     onTap: () async {
-                                                  //                                       if (bidText.text.isNotEmpty || choosenRide[0]['price'] != null) {
-                                                  //                                         setState(() {
-                                                  //                                           _isLoading = true;
-                                                  //                                         });
-                                                  //                                         try {
-                                                  //                                           await FirebaseDatabase.instance.ref().child('bid-meta/${choosenRide[0]["request_id"]}/drivers/driver_${userDetails["id"]}').update({
-                                                  //                                             'driver_id': userDetails['id'],
-                                                  //                                             'price': bidText.text.isNotEmpty ? bidText.text : choosenRide[0]['price'].toString(),
-                                                  //                                             'driver_name': userDetails['name'],
-                                                  //                                             'driver_img': userDetails['profile_picture'],
-                                                  //                                             'bid_time': ServerValue.timestamp,
-                                                  //                                             'is_rejected': 'none',
-                                                  //                                             'vehicle_make': userDetails['car_make_name'],
-                                                  //                                             'vehicle_model': userDetails['car_model_name'],
-                                                  //                                             'lat': center!.latitude,
-                                                  //                                             'lng': center!.longitude
-                                                  //                                           });
-                                                  //                                           setState(() {
-                                                  //                                             isAvailable = false;
-                                                  //                                           });
-                                                  //                                           FirebaseDatabase.instance.ref().child('drivers/driver_${userDetails['id']}').update({
-                                                  //                                             'is_available': false
-                                                  //                                           });
-                                                  //                                           // ignore: use_build_context_synchronously
-                                                  //                                           Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context) => const RidePage()), (route) => false);
-                                                  //                                           // Navigator.pop(context);
-                                                  //                                         } catch (e) {
-                                                  //                                           debugPrint(e.toString());
-                                                  //                                         }
-                                                  //                                         setState(() {
-                                                  //                                           _isLoading = false;
-                                                  //                                         });
-                                                  //                                       }
-                                                  //                                     },
-                                                  //                                     text: languages[choosenLanguage]['text_bid']))
-                                                  //                           ],
-                                                  //                         ),
-                                                  //                       )
-                                                  //                     ],
-                                                  //                   ),
-                                                  //                 ),
-                                                  //               ],
-                                                  //             )
-                                                  //           : (driverReq.isNotEmpty)
-                                                  //               ? (driverReq['accepted_at'] == null)
-                                                  //               //Aca se hace la verificacion si el driver acepta la carrera
-                                                  //               //si no la acepta significa que esta disponible para rechazar o ac
-                                                  //                   ? Column(
-                                                  //                       children: [
-                                                  //                         (driverReq['is_later'] == 1 && driverReq['is_rental'] != true)
-                                                  //                             ? Container(
-                                                  //                                 alignment: Alignment.center,
-                                                  //                                 margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //                                 padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                                 decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //                                 width: media.width * 1,
-                                                  //                                 child: MyText(
-                                                  //                                   text: '${languages[choosenLanguage]['text_rideLaterTime']} ${driverReq['cv_trip_start_time']}',
-                                                  //                                   size: media.width * sixteen,
-                                                  //                                   color: topBar,
-                                                  //                                 ),
-                                                  //                               )
-                                                  //                             : (driverReq['is_rental'] == true && driverReq['is_later'] != 1)
-                                                  //                                 ? Container(
-                                                  //                                     alignment: Alignment.center,
-                                                  //                                     margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //                                     padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                                     decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //                                     width: media.width * 1,
-                                                  //                                     child: MyText(
-                                                  //                                       text: '${languages[choosenLanguage]['text_rental_ride']} - ${driverReq['rental_package_name']}',
-                                                  //                                       size: media.width * sixteen,
-                                                  //                                       color: Colors.black,
-                                                  //                                     ),
-                                                  //                                   )
-                                                  //                                 : (driverReq['is_rental'] == true && driverReq['is_later'] == 1)
-                                                  //                                     ? Container(
-                                                  //                                         alignment: Alignment.center,
-                                                  //                                         margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //                                         padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                                         decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //                                         width: media.width * 1,
-                                                  //                                         child: Column(
-                                                  //                                           children: [
-                                                  //                                             MyText(
-                                                  //                                               text: '${languages[choosenLanguage]['text_rideLaterTime']}  ${driverReq['cv_trip_start_time']}',
-                                                  //                                               size: media.width * sixteen,
-                                                  //                                               color: Colors.black,
-                                                  //                                             ),
-                                                  //                                             SizedBox(height: media.width * 0.02),
-                                                  //                                             MyText(
-                                                  //                                               text: '${languages[choosenLanguage]['text_rental_ride']} ${driverReq['rental_package_name']}',
-                                                  //                                               size: media.width * sixteen,
-                                                  //                                               color: Colors.black,
-                                                  //                                             ),
-                                                  //                                           ],
-                                                  //                                         ),
-                                                  //                                       )
-                                                  //                                     : Container(),
-
-                                                  //                         Container(
-                                                  //                             padding: const EdgeInsets.fromLTRB(0, 0, 0, 0),
-                                                  //                             width: media.width * 1,
-                                                  //                             decoration: BoxDecoration(
-                                                  //                               borderRadius: BorderRadius.only(topLeft: Radius.circular(media.width * 0.02), topRight: Radius.circular(media.width * 0.02)),
-                                                  //                               color: page,
-                                                  //                               boxShadow: [
-                                                  //                                BoxShadow(blurRadius: 2, color: Colors.black.withOpacity(0.2), spreadRadius: 2)
-                                                  //                               ],
-                                                  //                           ),
-                                                  //                           child: Column(
-                                                  //                               crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                                  //                               children: [
-                                                  //                                 (duration != 0)
-                                                  //                                     ? AnimatedContainer(
-                                                  //                                         duration: const Duration(milliseconds: 100),
-                                                  //                                         height: 10,
-                                                  //                                         width: (media.width * 0.9 / double.parse(userDetails['trip_accept_reject_duration_for_driver'].toString())) * (double.parse(userDetails['trip_accept_reject_duration_for_driver'].toString()) - duration),
-                                                  //                                         decoration: BoxDecoration(
-                                                  //                                             color: buttonColor,
-                                                  //                                             borderRadius: (languageDirection == 'ltr')
-                                                  //                                                 ? BorderRadius.only(
-                                                  //                                                     topLeft: const Radius.circular(100),
-                                                  //                                                     topRight: (duration <= 2.0) ? const Radius.circular(100) : const Radius.circular(0),
-                                                  //                                                   )
-                                                  //                                                 : BorderRadius.only(
-                                                  //                                                     topRight: const Radius.circular(100),
-                                                  //                                                     topLeft: (duration <= 2.0) ? const Radius.circular(100) : const Radius.circular(0),
-                                                  //                                                   )),
-                                                  //                                       )
-                                                  //                                     : Container(),
-                                                  //                                 //*Sheet cuando aparece una carrera - remplazar luego
-                                                  //                                 Container(
-                                                  //                                   color: Colors.green,
-                                                  //                                   padding: EdgeInsets.fromLTRB(media.width * 0.05, media.width * 0.02, media.width * 0.05, media.width * 0.05),
-                                                  //                                   child: Column(
-                                                  //                                     children: [
-                                                  //                                       Container(
-                                                  //                                         height: media.width * 0.15,
-                                                  //                                         width: media.width * 0.15,
-                                                  //                                         decoration: BoxDecoration(shape: BoxShape.circle, image: DecorationImage(image: NetworkImage(driverReq['userDetail']['data']['profile_picture']), fit: BoxFit.cover)),
-                                                  //                                       ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.05,
-                                                  //                                       ),
-                                                  //                                       MyText(
-                                                  //                                         text: driverReq['userDetail']['data']['name'],
-                                                  //                                         size: media.width * eighteen,
-                                                  //                                       ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.05,
-                                                  //                                       ),
-                                                  //                                       (driverReq['drop_address'] == null && driverReq['is_rental'] == false)
-                                                  //                                           ? Container()
-                                                  //                                           : Row(
-                                                  //                                               mainAxisAlignment: MainAxisAlignment.center,
-                                                  //                                               children: [
-                                                  //                                                 Container(
-                                                  //                                                   padding: EdgeInsets.all(media.width * 0.03),
-                                                  //                                                   decoration: BoxDecoration(
-                                                  //                                                     color: Colors.grey.withOpacity(0.1),
-                                                  //                                                     border: Border.all(
-                                                  //                                                       color: textColor.withOpacity(0.2),
-                                                  //                                                     ),
-                                                  //                                                     borderRadius: BorderRadius.circular(media.width * 0.02),
-                                                  //                                                   ),
-                                                  //                                                   child: Row(
-                                                  //                                                     children: [
-                                                  //                                                       //payment image
-                                                  //                                                       SizedBox(
-                                                  //                                                         width: media.width * 0.06,
-                                                  //                                                         child: (driverReq['payment_opt'].toString() == '1')
-                                                  //                                                             ? Image.asset(
-                                                  //                                                                 'assets/images/cash.png',
-                                                  //                                                                 fit: BoxFit.contain,
-                                                  //                                                               )
-                                                  //                                                             : (driverReq['payment_opt'].toString() == '2')
-                                                  //                                                                 ? Image.asset(
-                                                  //                                                                     'assets/images/wallet.png',
-                                                  //                                                                     fit: BoxFit.contain,
-                                                  //                                                                   )
-                                                  //                                                                 : (driverReq['payment_opt'].toString() == '0')
-                                                  //                                                                     ? Image.asset(
-                                                  //                                                                         'assets/images/card.png',
-                                                  //                                                                         fit: BoxFit.contain,
-                                                  //                                                                       )
-                                                  //                                                                     : Container(),
-                                                  //                                                       ),
-                                                  //                                                       SizedBox(
-                                                  //                                                         width: media.width * 0.02,
-                                                  //                                                       ),
-                                                  //                                                       MyText(
-                                                  //                                                         text: (driverReq['payment_opt'].toString() == '1')
-                                                  //                                                             ? languages[choosenLanguage]['text_cash']
-                                                  //                                                             : (driverReq['payment_opt'].toString() == '2')
-                                                  //                                                                 ? languages[choosenLanguage]['text_wallet']
-                                                  //                                                                 : (driverReq['payment_opt'].toString() == '0')
-                                                  //                                                                     ? languages[choosenLanguage]['text_card']
-                                                  //                                                                     : languages[choosenLanguage]['text_upi'],
-                                                  //                                                         // driverReq['payment_type_string'].toString(),
-                                                  //                                                         size: media.width * sixteen,
-                                                  //                                                       ),
-                                                  //                                                       SizedBox(width: media.width * 0.02),
-                                                  //                                                       (driverReq['show_request_eta_amount'] == true && driverReq['request_eta_amount'] != null)
-                                                  //                                                           ? Row(
-                                                  //                                                               children: [
-                                                  //                                                                 MyText(
-                                                  //                                                                   text: driverReq['request_eta_amount'].toStringAsFixed(2),
-                                                  //                                                                   size: media.width * fourteen,
-                                                  //                                                                   fontweight: FontWeight.w700,
-                                                  //                                                                 ),
-                                                  //                                                                 MyText(
-                                                  //                                                                   text: userDetails['currency_symbol'],
-                                                  //                                                                   size: media.width * fourteen,
-                                                  //                                                                 )
-                                                  //                                                               ],
-                                                  //                                                             )
-                                                  //                                                           : Container()
-                                                  //                                                     ],
-                                                  //                                                   ),
-                                                  //                                                 )
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.02,
-                                                  //                                       ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: (tripStops.isEmpty) ? media.width * 0.3 : media.width * 0.4,
-                                                  //                                         child: SingleChildScrollView(
-                                                  //                                           child: Column(
-                                                  //                                             children: [
-                                                  //                                               Row(
-                                                  //                                                 mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                 children: [
-                                                  //                                                   Container(
-                                                  //                                                     height: media.width * 0.05,
-                                                  //                                                     width: media.width * 0.05,
-                                                  //                                                     alignment: Alignment.center,
-                                                  //                                                     decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.green),
-                                                  //                                                     child: Container(
-                                                  //                                                       height: media.width * 0.025,
-                                                  //                                                       width: media.width * 0.025,
-                                                  //                                                       decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.8)),
-                                                  //                                                     ),
-                                                  //                                                   ),
-                                                  //                                                   SizedBox(
-                                                  //                                                     width: media.width * 0.06,
-                                                  //                                                   ),
-                                                  //                                                   Expanded(
-                                                  //                                                     child: MyText(
-                                                  //                                                       text: driverReq['pick_address'],
-                                                  //                                                       size: media.width * twelve,
-                                                  //                                                       // overflow: TextOverflow.ellipsis,
-                                                  //                                                       // maxLines: 1,
-                                                  //                                                     ),
-                                                  //                                                   ),
-                                                  //                                                 ],
-                                                  //                                               ),
-                                                  //                                               SizedBox(
-                                                  //                                                 height: media.width * 0.02,
-                                                  //                                               ),
-                                                  //                                               (tripStops.isNotEmpty)
-                                                  //                                                   ? Column(
-                                                  //                                                       children: tripStops
-                                                  //                                                           .asMap()
-                                                  //                                                           .map((i, value) {
-                                                  //                                                             return MapEntry(
-                                                  //                                                                 i,
-                                                  //                                                                 (i < tripStops.length - 1)
-                                                  //                                                                     ? Container(
-                                                  //                                                                         padding: EdgeInsets.only(top: media.width * 0.02),
-                                                  //                                                                         child: Column(
-                                                  //                                                                           children: [
-                                                  //                                                                             Row(
-                                                  //                                                                               children: [
-                                                  //                                                                                 SizedBox(
-                                                  //                                                                                   width: media.width * 0.8,
-                                                  //                                                                                   child: Row(
-                                                  //                                                                                     mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                                                     children: [
-                                                  //                                                                                       Container(
-                                                  //                                                                                         height: media.width * 0.06,
-                                                  //                                                                                         width: media.width * 0.06,
-                                                  //                                                                                         alignment: Alignment.center,
-                                                  //                                                                                         decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red.withOpacity(0.1)),
-                                                  //                                                                                         child: MyText(
-                                                  //                                                                                           text: (i + 1).toString(),
-                                                  //                                                                                           // maxLines: 1,
-                                                  //                                                                                           color: const Color(0xFFFF0000),
-                                                  //                                                                                           fontweight: FontWeight.w600,
-                                                  //                                                                                           size: media.width * twelve,
-                                                  //                                                                                         ),
-                                                  //                                                                                       ),
-                                                  //                                                                                       SizedBox(
-                                                  //                                                                                         width: media.width * 0.05,
-                                                  //                                                                                       ),
-                                                  //                                                                                       Expanded(
-                                                  //                                                                                         child: MyText(
-                                                  //                                                                                           text: tripStops[i]['address'],
-                                                  //                                                                                           // maxLines: 1,
-                                                  //                                                                                           size: media.width * twelve,
-                                                  //                                                                                         ),
-                                                  //                                                                                       ),
-                                                  //                                                                                     ],
-                                                  //                                                                                   ),
-                                                  //                                                                                 ),
-                                                  //                                                                               ],
-                                                  //                                                                             ),
-                                                  //                                                                           ],
-                                                  //                                                                         ),
-                                                  //                                                                       )
-                                                  //                                                                     : Container());
-                                                  //                                                           })
-                                                  //                                                           .values
-                                                  //                                                           .toList(),
-                                                  //                                                     )
-                                                  //                                                   : Container(),
-                                                  //                                               SizedBox(
-                                                  //                                                 height: media.width * 0.02,
-                                                  //                                               ),
-                                                  //                                               (driverReq['is_rental'] != true && driverReq['drop_address'] != null)
-                                                  //                                                   ? Column(
-                                                  //                                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                       children: [
-                                                  //                                                         Row(
-                                                  //                                                           mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                           children: [
-                                                  //                                                             Container(
-                                                  //                                                               height: media.width * 0.06,
-                                                  //                                                               width: media.width * 0.06,
-                                                  //                                                               alignment: Alignment.center,
-                                                  //                                                               decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.red.withOpacity(0.1)),
-                                                  //                                                               child: Icon(
-                                                  //                                                                 Icons.location_on_outlined,
-                                                  //                                                                 color: const Color(0xFFFF0000),
-                                                  //                                                                 size: media.width * eighteen,
-                                                  //                                                               ),
-                                                  //                                                             ),
-                                                  //                                                             SizedBox(
-                                                  //                                                               width: media.width * 0.05,
-                                                  //                                                             ),
-                                                  //                                                             Expanded(
-                                                  //                                                               child: MyText(
-                                                  //                                                                 text: driverReq['drop_address'],
-                                                  //                                                                 // maxLines: 1,
-                                                  //                                                                 size: media.width * twelve,
-                                                  //                                                               ),
-                                                  //                                                             ),
-                                                  //                                                           ],
-                                                  //                                                         ),
-                                                  //                                                       ],
-                                                  //                                                     )
-                                                  //                                                   : Container(),
-                                                  //                                             ],
-                                                  //                                           ),
-                                                  //                                         ),
-                                                  //                                       ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.02,
-                                                  //                                       ),
-                                                  //                                       (driverReq['goods_type'] != '-' && driverReq['goods_type'] != null)
-                                                  //                                           ? MyText(
-                                                  //                                               text: driverReq['goods_type'].toString(),
-                                                  //                                               size: media.width * fourteen,
-                                                  //                                               color: verifyDeclined,
-                                                  //                                             )
-                                                  //                                           : Container(),
-                                                  //                                       (driverReq['is_luggage_available'] == 1 || driverReq['is_pet_available'] == 1)
-                                                  //                                           ? Column(
-                                                  //                                               children: [
-                                                  //                                                 Row(
-                                                  //                                                   children: [
-                                                  //                                                     MyText(
-                                                  //                                                       text: languages[choosenLanguage]['text_ride_preference'] + ' :- ',
-                                                  //                                                       size: media.width * fourteen,
-                                                  //                                                       fontweight: FontWeight.w600,
-                                                  //                                                     ),
-                                                  //                                                     SizedBox(
-                                                  //                                                       width: media.width * 0.025,
-                                                  //                                                     ),
-                                                  //                                                     if (driverReq['is_pet_available'] == 1)
-                                                  //                                                       Row(
-                                                  //                                                         children: [
-                                                  //                                                           Icon(Icons.pets, size: media.width * 0.05, color: theme),
-                                                  //                                                           SizedBox(
-                                                  //                                                             width: media.width * 0.01,
-                                                  //                                                           ),
-                                                  //                                                           MyText(
-                                                  //                                                             text: languages[choosenLanguage]['text_pets'],
-                                                  //                                                             size: media.width * fourteen,
-                                                  //                                                             fontweight: FontWeight.w600,
-                                                  //                                                             color: theme,
-                                                  //                                                           ),
-                                                  //                                                         ],
-                                                  //                                                       ),
-                                                  //                                                     if (driverReq['is_luggage_available'] == 1 && driverReq['is_pet_available'] == 1)
-                                                  //                                                       MyText(
-                                                  //                                                         text: ', ',
-                                                  //                                                         size: media.width * fourteen,
-                                                  //                                                         fontweight: FontWeight.w600,
-                                                  //                                                         color: theme,
-                                                  //                                                       ),
-                                                  //                                                     if (driverReq['is_luggage_available'] == 1)
-                                                  //                                                       Row(
-                                                  //                                                         children: [
-                                                  //                                                           // Icon(Icons.luggage, size: media.width * 0.05, color: theme),
-                                                  //                                                           SizedBox(
-                                                  //                                                             height: media.width * 0.05,
-                                                  //                                                             width: media.width * 0.075,
-                                                  //                                                             child: Image.asset(
-                                                  //                                                               'assets/images/luggages.png',
-                                                  //                                                               color: theme,
-                                                  //                                                             ),
-                                                  //                                                           ),
-                                                  //                                                           SizedBox(
-                                                  //                                                             width: media.width * 0.01,
-                                                  //                                                           ),
-                                                  //                                                           MyText(
-                                                  //                                                             text: languages[choosenLanguage]['text_luggages'],
-                                                  //                                                             size: media.width * fourteen,
-                                                  //                                                             fontweight: FontWeight.w600,
-                                                  //                                                             color: theme,
-                                                  //                                                           ),
-                                                  //                                                         ],
-                                                  //                                                       ),
-                                                  //                                                   ],
-                                                  //                                                 ),
-                                                  //                                                 SizedBox(
-                                                  //                                                   height: media.width * 0.025,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             )
-                                                  //                                           : Container(),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.04,
-                                                  //                                       ),
-                                                  //                                       Row(
-                                                  //                                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                                  //                                         children: [
-                                                  //                                           Button(
-                                                  //                                               color: const Color(0xFFFF0000).withOpacity(0.2),
-                                                  //                                               width: media.width * 0.4,
-                                                  //                                               textcolor: const Color(0XFFFF0000),
-                                                  //                                               onTap: () async {
-                                                  //                                                 setState(() {
-                                                  //                                                   _isLoading = true;
-                                                  //                                                 });
-                                                  //                                                 //reject request
-                                                  //                                                 await requestReject();
-                                                  //                                                 setState(() {
-                                                  //                                                   _isLoading = false;
-                                                  //                                                 });
-                                                  //                                               },
-                                                  //                                               text: languages[choosenLanguage]['text_decline']),
-                                                  //                                           Button(
-                                                  //                                             onTap: () async {
-                                                  //                                               setState(() {
-                                                  //                                                 _isLoading = true;
-                                                  //                                               });
-                                                  //                                               await requestAccept();
-                                                  //                                               setState(() {
-                                                  //                                                 _isLoading = false;
-                                                  //                                               });
-                                                  //                                             },
-                                                  //                                             text: languages[choosenLanguage]['text_accept'],
-                                                  //                                             width: media.width * 0.4,
-                                                  //                                           )
-                                                  //                                         ],
-                                                  //                                       )
-                                                  //                                     ],
-                                                  //                                   ),
-                                                  //                                 )
-
-                                                  //                               ],
-                                                  //                             ),
-                                                  //                         ),
-                                                  //                       ],
-                                                  //                     )
-                                                  //                     //*Aca termina la carta que aparece cuando exitse una carrera
-                                                  //                   : (driverReq['accepted_at'] !=
-                                                  //                           null)
-                                                  //                       ? SizedBox(
-                                                  //                           width: media.width * 0.9,
-                                                  //                           height: media.width * 0.7,
-                                                  //                         )
-                                                  //                       : Container(width: media.width * 0.9)
-                                                  //               : Container(
-                                                  //                   width: media.width *
-                                                  //                       0.9,
-                                                  //                 ),
-                                                  //     ],
-                                                  //   ),
-                                                  // ),
-                                                  // if(showLocationRide == true && showRequestsOverlay == false)
-                                                  //  Container(
-                                                  //   height: 300,
-                                                  //   width: 300,
-                                                  //   color: Colors.amber,
-                                                  //  ),
-
-                                                  //                                             fm.FlutterMap(
-                                                  //                                                           mapController:
-                                                  //                                                               _fmController,
-                                                  //                                                           options: fm.MapOptions(
-                                                  //                                                               initialCenter: pickupLocation ?? fmlt.LatLng(center!.latitude, center!.longitude),
-                                                  //                                                               initialZoom: 16,
-                                                  //                                                               onTap: (P, L) {},
-                                                  //                                                             ),
-                                                  //                                                           children: [
-                                                  //                                                             fm.TileLayer(
-                                                  //                                                               urlTemplate:
-                                                  //                                                                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                                  //                                                               userAgentPackageName:
-                                                  //                                                                   'com.example.app',
-                                                  //                                                             ),
-                                                  //                                                              // Si hay una ubicación de recogida seleccionada, mostrar el marcador
-                                                  //                                                               if (pickupLocation != null)
-                                                  // fm.MarkerLayer(
-                                                  //   markers: [
-                                                  //     fm.Marker(
-                                                  //       // point: pickupLocation!,
-                                                  //        point: pickupLocation!,
-                                                  //       child:  const Icon(Icons.location_pin, color: Colors.red, size: 50),
-                                                  //     ),
-                                                  //   ],
-                                                  // ),
-                                                  //                                                           ],
-                                                  //                                                         ),
-
-                                                  //  fm.FlutterMap(
-                                                  //   options: fm.MapOptions(
-                                                  //     initialCenter: pickupLocation ?? fmlt.LatLng(center!.latitude, center!.longitude),
-                                                  //     initialZoom: 16,
-                                                  //   ),
-                                                  //   children: [
-                                                  //         fm.TileLayer(
-                                                  //           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                                  //           userAgentPackageName: 'com.example.app',
-                                                  //            ),
-                                                  //            if (pickupLocation != null)
-                                                  //            fm.MarkerLayer(
-                                                  //              markers: [
-                                                  //               fm.Marker(
-                                                  //                 point: pickupLocation!,
-                                                  //                  child: const Icon(Icons.location_pin, color: Colors.red, size: 50),
-                                                  //                  ),
-                                                  //                  ],
-                                                  //                 ),
-                                                  //   ],
-                                                  // ),
-
-                                                  if (showRequestsOverlay &&
-                                                      requestMetas.isNotEmpty &&
-                                                      mostrarRutaDobleTap ==
-                                                          false)
-                                                    (driverReq['accepted_at'] !=
-                                                            null)
+                                                  if (showRequestsOverlay && requestMetas.isNotEmpty && mostrarRutaDobleTap == false)
+                                                    (driverReq['accepted_at'] != null)
                                                         ? Container()
                                                         : ShowRides(
-                                                            onDoubleTap: (int
-                                                                index) async {
+                                                            onDoubleTap: (int index) async {
                                                               setState(() {
-                                                                showLocationRide =
-                                                                    true;
-                                                                showRequestsOverlay =
-                                                                    false;
-                                                                requestIdDoubleTapUser =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .requestId;
-                                                                showRidesLatRecoger =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .recogidaLat;
-                                                                showRidesLonRecoger =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .recogidaLong;
-
-                                                                longitudeDestino =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .destinoLong;
-                                                                latitudeDestino =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .destinoLat;
-                                                                nombreUsuario =
-                                                                    requestMetas[
-                                                                            index]
-                                                                        .nomUsuario;
-                                                                final lonlat =
-                                                                    fmlt.LatLng(
-                                                                        showRidesLatRecoger!,
-                                                                        showRidesLonRecoger!);
-                                                                _fmController
-                                                                    .move(
-                                                                        lonlat,
-                                                                        18);
+                                                                showLocationRide = true;
+                                                                showRequestsOverlay = false;
+                                                                requestIdDoubleTapUser = requestMetas[index].requestId;
+                                                                showRidesLatRecoger = requestMetas[index].recogidaLat;
+                                                                showRidesLonRecoger = requestMetas[index].recogidaLong;
+                                                                longitudeDestino = requestMetas[index].destinoLong;
+                                                                latitudeDestino = requestMetas[index].destinoLat;
+                                                                nombreUsuario = requestMetas[index].nomUsuario;
+                                                                final lonlat = fmlt.LatLng(showRidesLatRecoger!, showRidesLonRecoger!);
+                                                                _fmController.move(lonlat, 18);
                                                               });
 
                                                               // Obtener la ruta del servicio GraphHopper
-                                                              if (showRidesLatRecoger !=
-                                                                      null &&
-                                                                  showRidesLonRecoger !=
-                                                                      null) {
+                                                              if (showRidesLatRecoger != null && showRidesLonRecoger != null) {
                                                                 try {
                                                                   // Aquí llamamos a la función que obtiene la ruta desde GraphHopper
                                                                   List<fmlt.LatLng> points = await getRouteFromGraphHopper(
-                                                                      currentPositionNew!
-                                                                          .latitude,
-                                                                      currentPositionNew!
-                                                                          .longitude,
+                                                                      currentPositionNew!.latitude,
+                                                                      currentPositionNew!.longitude,
                                                                       showRidesLatRecoger!,
-                                                                      showRidesLonRecoger!);
-
+                                                                      showRidesLonRecoger!
+                                                                    );
                                                                   setState(() {
-                                                                    mostrarRutaDobleTap =
-                                                                        true;
-                                                                    routePoints =
-                                                                        points; // Actualizamos los puntos de la ruta
+                                                                    mostrarRutaDobleTap = true;
+                                                                    routePoints = points; // Actualizamos los puntos de la ruta
                                                                   });
                                                                 } catch (e) {
                                                                   print(
                                                                       'Error al obtener la ruta: $e');
                                                                 }
                                                               }
-                                                              if (latitudeDestino !=
-                                                                      0.0 &&
-                                                                  longitudeDestino !=
-                                                                      0.0) {
+                                                              if (latitudeDestino != 0.0 && longitudeDestino != 0.0) {
                                                                 try {
                                                                   // Aquí llamamos a la función que obtiene la ruta desde GraphHopper
-                                                                  List<
-                                                                          fmlt
-                                                                          .LatLng>
-                                                                      points =
-                                                                      await getRouteFromGraphHopper(
-                                                                          showRidesLatRecoger!,
-                                                                          showRidesLonRecoger!,
-                                                                          latitudeDestino!,
-                                                                          longitudeDestino!);
-
+                                                                  List<fmlt.LatLng>
+                                                                      points = await getRouteFromGraphHopper(
+                                                                            showRidesLatRecoger!,
+                                                                            showRidesLonRecoger!,
+                                                                            latitudeDestino!,
+                                                                            longitudeDestino!
+                                                                          );
                                                                   setState(() {
-                                                                    dropProvider
-                                                                            .mostrardDibujadoDestino =
-                                                                        true;
-                                                                    dropProvider
-                                                                            .routePointsDestino =
-                                                                        points; // Actualizamos los puntos de la ruta
+                                                                    dropProvider.mostrardDibujadoDestino = true;
+                                                                    dropProvider.routePointsDestino = points; // Actualizamos los puntos de la ruta
                                                                   });
                                                                 } catch (e) {
                                                                   print(
                                                                       'Error al obtener la ruta: $e');
                                                                 }
                                                               }
-
                                                               // Seguir escuchando cambios en la solicitud
-                                                              listenToRequestChanges(
-                                                                  requestIdDoubleTapUser!);
+                                                              listenToRequestChanges(requestIdDoubleTapUser!);
                                                             },
-                                                            rejectedRides:
-                                                                rejectedRides,
-                                                            listRequests:
-                                                                requestMetas,
+                                                            rejectedRides: rejectedRides,
+                                                            listRequests: requestMetas,
                                                             media: media,
                                                             onTap: () {
                                                               setState(() {
-                                                                showRequestsOverlay =
-                                                                    false;
+                                                                showRequestsOverlay = false;
                                                               });
                                                             },
                                                           ),
@@ -4877,251 +4365,42 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                     Container(
                                                       height: media.height * 1,
                                                       width: media.width * 1,
-                                                      color: Colors.black
-                                                          .withOpacity(0.5),
+                                                      color: Colors.black.withOpacity(0.5),
                                                       child: Center(
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                          color: newRedColor,
-                                                        ),
+                                                        child: CircularProgressIndicator(color: newRedColor),
                                                       ),
                                                     ),
 
                                                   // //*ESTE BOTON TIENE QUE centrar  al ususario
-                                                  // (driverReq['accepted_at'] ==
-                                                  //         null)
-                                                  //     ? Container()
-                                                  //     : ValueListenableBuilder(
-                                                  //         valueListenable:
-                                                  //             acceptDriverBottomSheetOffset,
-                                                  //         builder: (context,
-                                                  //             offset, child) {
-                                                  //           double
-                                                  //               bottomPadding =
-                                                  //               915 * (offset);
-                                                  //           return AnimatedPositioned(
-                                                  //             duration:
-                                                  //                 const Duration(
-                                                  //                     milliseconds:
-                                                  //                         300),
-                                                  //             bottom:
-                                                  //                 bottomPadding,
-                                                  //             right: 20,
-                                                  //             child: Container(
-                                                  //               decoration: BoxDecoration(
-                                                  //                   boxShadow: [
-                                                  //                     BoxShadow(
-                                                  //                         blurRadius:
-                                                  //                             2,
-                                                  //                         color: Colors.black.withOpacity(
-                                                  //                             0.2),
-                                                  //                         spreadRadius:
-                                                  //                             2)
-                                                  //                   ],
-                                                  //                   color: page,
-                                                  //                   borderRadius:
-                                                  //                       BorderRadius.circular(media.width *
-                                                  //                           0.02)),
-                                                  //               child: Material(
-                                                  //                 color: Colors
-                                                  //                     .transparent,
-                                                  //                 child:
-                                                  //                     InkWell(
-                                                  //                   onTap:
-                                                  //                       () async {
-                                                  //                         _onFollowLocationPressed();
-                                                  //                     if (locationAllowed ==
-                                                  //                         true) {
-                                                  //                       if (mapType ==
-                                                  //                           'google') {
-                                                  //                         _controller?.animateCamera(CameraUpdate.newLatLngZoom(
-                                                  //                             centerPosition!,
-                                                  //                             18.0));
-                                                  //                       } else {
-                                                  //                         _fmController.move(
-                                                  //                             fmlt.LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude),
-                                                  //                             _fmController.camera.zoom);
-                                                  //                       }
-                                                  //                     } else {
-                                                  //                       if (serviceEnabled ==
-                                                  //                           true) {
-                                                  //                         setState(
-                                                  //                             () {
-                                                  //                           _locationDenied =
-                                                  //                               true;
-                                                  //                         });
-                                                  //                       } else {
-                                                  //                         await geolocator.Geolocator.getCurrentPosition(
-                                                  //                             desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
 
-                                                  //                         setState(
-                                                  //                             () {
-                                                  //                           _isLoading =
-                                                  //                               true;
-                                                  //                         });
-                                                  //                         await getLocs();
-                                                  //                         if (serviceEnabled ==
-                                                  //                             true) {
-                                                  //                           setState(() {
-                                                  //                             _locationDenied = true;
-                                                  //                           });
-                                                  //                         }
-                                                  //                       }
-                                                  //                     }
-                                                  //                   },
-                                                  //                   child:
-                                                  //                       SizedBox(
-                                                  //                     height:
-                                                  //                         media.width *
-                                                  //                             0.1,
-                                                  //                     width: media
-                                                  //                             .width *
-                                                  //                         0.1,
-
-                                                  //                     // alignment:
-                                                  //                     //     Alignment.center,
-                                                  //                     child:
-                                                  //                         Icon(
-                                                  //                       Icons
-                                                  //                           .my_location_sharp,
-                                                  //                       color:
-                                                  //                           newRedColor,
-                                                  //                       size: media.width *
-                                                  //                           0.068,
-                                                  //                     ),
-                                                  //                   ),
-                                                  //                 ),
-                                                  //               ),
-                                                  //             ),
-                                                  //           );
-                                                  //         }),
-
-                                                  (driverReq['is_driver_arrived'] ==
-                                                              1 &&
-                                                          driverReq[
-                                                                  'is_trip_start'] ==
-                                                              0)
+                                                  (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0)
                                                       ? NotificarCliente(
-                                                          acceptDriverBottomSheetOffset:
-                                                              acceptDriverBottomSheetOffset,
+                                                          acceptDriverBottomSheetOffset: acceptDriverBottomSheetOffset,
                                                           media: media,
                                                           onTap: () async {
                                                             showAdaptiveDialog(
-                                                                barrierDismissible:
-                                                                    false,
-                                                                context:
-                                                                    context,
-                                                                builder:
-                                                                    (BuildContext
-                                                                        context) {
+                                                                barrierDismissible: false,
+                                                                context: context,
+                                                                builder: (BuildContext context) {
                                                                   return const AlertaNotificarLlegada();
                                                                 });
                                                           },
                                                         )
                                                       : const SizedBox(),
                                                   // //*ESTE BOTON TIENE QUE ABRIR centrar el donde esta el ususario
-                                                  // (driverReq['accepted_at'] ==
-                                                  //         null)
-                                                  //     ? Container()
-                                                  //     : latRecoger == null
-                                                  //         ? Container()
-                                                  //         : CenterDestination(
-                                                  //             acceptDriverBottomSheetOffset:
-                                                  //                 acceptDriverBottomSheetOffset,
-                                                  //             media: media,
-                                                  //             onTap: () async {
-                                                  //               _onCameraMoveStarted();
-                                                  //               if (locationAllowed ==
-                                                  //                   true) {
-                                                  //                 if (mapType ==
-                                                  //                     'google') {
-                                                  //                   _controller?.animateCamera(
-                                                  //                       CameraUpdate.newLatLngZoom(
-                                                  //                           centerPosition!,
-                                                  //                           22.0));
-                                                  //                 } else {
-                                                  //                   _fmController.move(
-                                                  //                       fmlt.LatLng(
-                                                  //                           latRecoger!,
-                                                  //                           lonRecoger!),
-                                                  //                       _fmController
-                                                  //                           .camera
-                                                  //                           .zoom);
-                                                  //                 }
-                                                  //               } else {
-                                                  //                 if (serviceEnabled ==
-                                                  //                     true) {
-                                                  //                   setState(
-                                                  //                       () {
-                                                  //                     _locationDenied =
-                                                  //                         true;
-                                                  //                   });
-                                                  //                 } else {
-                                                  //                   await geolocator
-                                                  //                           .Geolocator
-                                                  //                       .getCurrentPosition(
-                                                  //                           desiredAccuracy:
-                                                  //                               geolocator.LocationAccuracy.bestForNavigation);
-
-                                                  //                   setState(
-                                                  //                       () {
-                                                  //                     _isLoading =
-                                                  //                         true;
-                                                  //                   });
-                                                  //                   await getLocs();
-                                                  //                   if (serviceEnabled ==
-                                                  //                       true) {
-                                                  //                     setState(
-                                                  //                         () {
-                                                  //                       _locationDenied =
-                                                  //                           true;
-                                                  //                     });
-                                                  //                   }
-                                                  //                 }
-                                                  //               }
-                                                  //             },
-                                                  //           ),
-
-                                                  // //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DE LA RECOGIDA
-                                                  // (driverReq['accepted_at'] ==
-                                                  //         null)
-                                                  //     ? Container()
-                                                  //     : PickUpOpenMap(
-                                                  //         acceptDriverBottomSheetOffset:
-                                                  //             acceptDriverBottomSheetOffset,
-                                                  //         media: media),
-
-                                                  // //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DEL DESTINO
-                                                  // (driverReq['accepted_at'] ==
-                                                  //         null)
-                                                  //     ? Container()
-                                                  //     : latitudeDestino ==
-                                                  //                 null ||
-                                                  //             latitudeDestino ==
-                                                  //                 0.0
-                                                  //         ? Container()
-                                                  //         : OpenMapApp(
-                                                  //             acceptDriverBottomSheetOffset:
-                                                  //                 acceptDriverBottomSheetOffset,
-                                                  //             media: media),
-
-                                                  if (mostrarAlertaConfirmacion ==
-                                                      true)
+                                                  
+                                                  if (mostrarAlertaConfirmacion == true)
                                                     Alertas(
-                                                      titulo:
-                                                          '¡El pasajero acaba de confirmar!',
-                                                      contenido:
-                                                          'El pasajero ya está en camino, preparate para recibirlo.',
+                                                      titulo: '¡El pasajero acaba de confirmar!',
+                                                      contenido: 'El pasajero ya está en camino, preparate para recibirlo.',
                                                       textoBoton: 'Aceptar',
                                                       botonOnTapAceptar: () {
                                                         setState(() {
-                                                          mostrarAlertaConfirmacion =
-                                                              false;
+                                                          mostrarAlertaConfirmacion = false;
                                                         });
                                                       },
                                                       botonOnTapSalir: () {
-                                                        mostrarAlertaConfirmacion =
-                                                            false;
+                                                        mostrarAlertaConfirmacion = false;
                                                       },
                                                     ),
 
@@ -5129,1093 +4408,41 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                   isAvailable == false
                                                       ? Positioned(
                                                           bottom: 0,
-                                                          child:
-                                                              BottomCardSheetDriverAccept(
-                                                            bottomSheetOffset:
-                                                                acceptDriverBottomSheetOffset,
-                                                            driverOtp:
-                                                                driverOtp,
+                                                          child: BottomCardSheetDriverAccept(
+                                                            bottomSheetOffset: acceptDriverBottomSheetOffset,
+                                                            driverOtp: driverOtp,
                                                             errorOtp: _errorOtp,
-                                                            navigationtype:
-                                                                navigationtype,
-                                                            isLoading:
-                                                                _isLoading,
-                                                            getStartOtp:
-                                                                getStartOtp,
-                                                            navigateLogout:
-                                                                navigateLogout,
-                                                            onTapCancelar:
-                                                                () async {
+                                                            navigationtype: navigationtype,
+                                                            isLoading: _isLoading,
+                                                            getStartOtp: getStartOtp,
+                                                            navigateLogout: navigateLogout,
+                                                            onTapCancelar: () async {
                                                               setState(() {
-                                                                _isLoading =
-                                                                    true;
+                                                                _isLoading = true;
                                                               });
                                                               var val = await cancelReason(
-                                                                  (driverReq['is_driver_arrived'] ==
-                                                                          0)
+                                                                  (driverReq['is_driver_arrived'] == 0)
                                                                       ? 'before'
-                                                                      : 'after');
+                                                                      : 'after'
+                                                                );
                                                               if (val == true) {
                                                                 setState(() {
-                                                                  cancelRequest =
-                                                                      true;
-                                                                  _cancelReason =
-                                                                      '';
-                                                                  _cancellingError =
-                                                                      '';
+                                                                  cancelRequest = true;
+                                                                  _cancelReason = '';
+                                                                  _cancellingError = '';
                                                                 });
                                                                 //   Future.delayed(const Duration(seconds: 1), (){
                                                                 //   Navigator.pop(context);
                                                                 // });
                                                               }
                                                               setState(() {
-                                                                _isLoading =
-                                                                    false;
+                                                                _isLoading = false;
                                                               });
                                                             },
                                                             // bottomSheetOffset: bottomSheetOffset,
                                                           ),
                                                         )
                                                       : Container()
-                                                  // on ride bottom sheet
-                                                  // (driverReq['accepted_at'] != null)
-                                                  //     ? AnimatedPositioned(
-                                                  //         duration:
-                                                  //             const Duration(
-                                                  //                 milliseconds:
-                                                  //                     250),
-                                                  //         bottom: addressBottom !=
-                                                  //                 null
-                                                  //             ? -addressBottom
-                                                  //             : -(media
-                                                  //                     .height -
-                                                  //                 (media
-                                                  //                     .width)),
-                                                  //         child:
-                                                  //             GestureDetector(
-                                                  //           onVerticalDragStart:
-                                                  //               (v) {
-                                                  //             _cont.jumpTo(
-                                                  //                 0.0);
-                                                  //             start = v
-                                                  //                 .globalPosition
-                                                  //                 .dy;
-                                                  //             if (addressBottom !=
-                                                  //                 null) {
-                                                  //               _addressBottom =
-                                                  //                   addressBottom;
-                                                  //             } else {
-                                                  //               addressBottom =
-                                                  //                   (media.height -
-                                                  //                       media.width);
-                                                  //               _addressBottom =
-                                                  //                   addressBottom;
-                                                  //             }
-                                                  //             gesture
-                                                  //                 .clear();
-                                                  //           },
-                                                  //           onVerticalDragUpdate:
-                                                  //               (v) {
-                                                  //             // if (v.globalPosition.dy < (media.width * 0.8)) {
-                                                  //             //   _addressBottom = media.height -
-                                                  //             //       (media.height - v.globalPosition.dy);
-                                                  //             //   // print('comingg ${v.globalPosition.dy} $_addressBottom');
-                                                  //             // } else {
-                                                  //             //   _addressBottom = media.width * 0.8;
-                                                  //             // }
-                                                  //             if ((_addressBottom +
-                                                  //                         (v.globalPosition.dy -
-                                                  //                             start)) >
-                                                  //                     media.height *
-                                                  //                         0.2 &&
-                                                  //                 (_addressBottom +
-                                                  //                         (v.globalPosition.dy -
-                                                  //                             start)) <
-                                                  //                     ((media.height * 1.25) -
-                                                  //                         media.width)) {
-                                                  //               addressBottom =
-                                                  //                   _addressBottom +
-                                                  //                       (v.globalPosition.dy -
-                                                  //                           start);
-                                                  //             }
-                                                  //             setState(
-                                                  //                 () {});
-                                                  //           },
-                                                  //           onVerticalDragEnd:
-                                                  //               (v) {},
-                                                  //           child: Column(
-                                                  //             children: [
-                                                  //               // (driverReq['is_trip_start'] ==
-                                                  //               //         0)
-                                                  //               //     ? Column(
-                                                  //               //         children: [
-                                                  //               //           (driverReq['is_later'] == 1 && driverReq['is_rental'] != true)
-                                                  //               //               ? Container(
-                                                  //               //                   alignment: Alignment.center,
-                                                  //               //                   margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //               //                   padding: EdgeInsets.all(media.width * 0.025),
-                                                  //               //                   decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //               //                   width: media.width * 1,
-                                                  //               //                   child: MyText(
-                                                  //               //                     text: '${languages[choosenLanguage]['text_rideLaterTime']} ${driverReq['cv_trip_start_time']}',
-                                                  //               //                     size: media.width * sixteen,
-                                                  //               //                     color: topBar,
-                                                  //               //                   ),
-                                                  //               //                 )
-                                                  //               //               : (driverReq['is_rental'] == true && driverReq['is_later'] != 1)
-                                                  //               //                   ? Container(
-                                                  //               //                       alignment: Alignment.center,
-                                                  //               //                       margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //               //                       padding: EdgeInsets.all(media.width * 0.025),
-                                                  //               //                       decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //               //                       width: media.width * 1,
-                                                  //               //                       child: MyText(
-                                                  //               //                         text: '${languages[choosenLanguage]['text_rental_ride']} - ${driverReq['rental_package_name']}',
-                                                  //               //                         size: media.width * sixteen,
-                                                  //               //                         color: Colors.black,
-                                                  //               //                       ),
-                                                  //               //                     )
-                                                  //               //                   : (driverReq['is_rental'] == true && driverReq['is_later'] == 1)
-                                                  //               //                       ? Container(
-                                                  //               //                           alignment: Alignment.center,
-                                                  //               //                           margin: EdgeInsets.only(bottom: media.width * 0.025),
-                                                  //               //                           padding: EdgeInsets.all(media.width * 0.025),
-                                                  //               //                           decoration: BoxDecoration(color: buttonColor, borderRadius: BorderRadius.circular(6)),
-                                                  //               //                           width: media.width * 1,
-                                                  //               //                           child: Column(
-                                                  //               //                             children: [
-                                                  //               //                               MyText(
-                                                  //               //                                 text: '${languages[choosenLanguage]['text_rideLaterTime']}  ${driverReq['cv_trip_start_time']}',
-                                                  //               //                                 size: media.width * sixteen,
-                                                  //               //                                 color: Colors.black,
-                                                  //               //                               ),
-                                                  //               //                               SizedBox(height: media.width * 0.02),
-                                                  //               //                               MyText(
-                                                  //               //                                 text: '${languages[choosenLanguage]['text_rental_ride']} ${driverReq['rental_package_name']}',
-                                                  //               //                                 size: media.width * sixteen,
-                                                  //               //                                 color: Colors.black,
-                                                  //               //                               ),
-                                                  //               //                             ],
-                                                  //               //                           ),
-                                                  //               //                         )
-                                                  //               //                       : Container(),
-                                                  //               //         ],
-                                                  //               //       )
-                                                  //               //     : Container(),
-
-                                                  //               //*Contenedor que contiene cuando el chofer acepta el viaje
-                                                  //               Container(
-                                                  //                 padding: EdgeInsets.all(
-                                                  //                     media.width *
-                                                  //                         0.05),
-                                                  //                 width:
-                                                  //                     media.width *
-                                                  //                         1,
-                                                  //                 height:
-                                                  //                     media.height *
-                                                  //                         1.2,
-                                                  //                 decoration: BoxDecoration(
-                                                  //                     borderRadius: const BorderRadius
-                                                  //                         .only(
-                                                  //                         topLeft: Radius.circular(10),
-                                                  //                         topRight: Radius.circular(10)),
-                                                  //                     color: Colors.amber),
-                                                  //                 child:
-                                                  //                     Column(
-                                                  //                   children: [
-                                                  //                     Container(
-                                                  //                       width:
-                                                  //                           media.width * 0.13,
-                                                  //                       height:
-                                                  //                           media.width * 0.012,
-                                                  //                       decoration: BoxDecoration(
-                                                  //                           borderRadius: const BorderRadius.all(
-                                                  //                             Radius.circular(10),
-                                                  //                           ),
-                                                  //                           color: Colors.grey.withOpacity(0.5)),
-                                                  //                     ),
-                                                  //                     SizedBox(
-                                                  //                         height: media.width * 0.02),
-                                                  //                     Row(
-                                                  //                       // mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                                  //                       children: [
-                                                  //                         Expanded(
-                                                  //                           child: Row(
-                                                  //                             children: [
-                                                  //                               Image.asset(
-                                                  //                                   (driverReq['is_driver_arrived'] == 0)
-                                                  //                                       ? 'assets/images/ontheway.png'
-                                                  //                                       : (driverReq['is_trip_start'] == 1)
-                                                  //                                           ? 'assets/images/ontheway_icon.png'
-                                                  //                                           : 'assets/images/startonthe.png',
-                                                  //                                   width: media.width * 0.075,
-                                                  //                                   color: textColor),
-                                                  //                               SizedBox(
-                                                  //                                 width: media.width * 0.02,
-                                                  //                               ),
-                                                  //                               Expanded(
-                                                  //                                 child: MyText(
-                                                  //                                   text: (driverReq['is_driver_arrived'] == 0)
-                                                  //                                       ? languages[choosenLanguage]['text_in_the_way']
-                                                  //                                       : (driverReq['is_trip_start'] == 1)
-                                                  //                                           ? (driverReq['drop_address'] == null || distTime == null)
-                                                  //                                               ? languages[choosenLanguage]['text_wat_to_drop']
-                                                  //                                               : '${languages[choosenLanguage]['text_onride']} ${double.parse(((distTime * 2)).toString()).round()} ${languages[choosenLanguage]['text_mins']}'
-                                                  //                                           : languages[choosenLanguage]['text_waiting_rider'],
-                                                  //                                   size: media.width * fourteen,
-                                                  //                                   fontweight: FontWeight.w700,
-                                                  //                                 ),
-                                                  //                               ),
-                                                  //                             ],
-                                                  //                           ),
-                                                  //                         ),
-                                                  //                         (driverReq['is_driver_arrived'] == 1 && waitingTime != null)
-                                                  //                             ? (waitingTime / 60 >= 1)
-                                                  //                                 ? Container(
-                                                  //                                     padding: EdgeInsets.all(media.width * 0.03),
-                                                  //                                     decoration: BoxDecoration(color: topBar, borderRadius: BorderRadius.circular(media.width * 0.02), border: Border.all(color: Colors.grey.withOpacity(0.5))),
-                                                  //                                     child: (driverReq['accepted_at'] == null && driverReq['show_request_eta_amount'] == true && driverReq['request_eta_amount'] != null)
-                                                  //                                         ? MyText(
-                                                  //                                             text: userDetails['currency_symbol'] + driverReq['request_eta_amount'].toString(),
-                                                  //                                             size: media.width * fourteen,
-                                                  //                                             color: isDarkTheme == true ? Colors.black : textColor,
-                                                  //                                           )
-                                                  //                                         : (driverReq['is_driver_arrived'] == 1 && waitingTime != null)
-                                                  //                                             ? (waitingTime / 60 >= 1)
-                                                  //                                                 ? Column(
-                                                  //                                                     children: [
-                                                  //                                                       MyText(text: 'Waiting Time', size: media.width * twelve),
-                                                  //                                                       SizedBox(
-                                                  //                                                         height: media.width * 0.015,
-                                                  //                                                       ),
-                                                  //                                                       Row(
-                                                  //                                                         children: [
-                                                  //                                                           Icon(
-                                                  //                                                             Icons.alarm_outlined,
-                                                  //                                                             size: media.width * fourteen,
-                                                  //                                                           ),
-                                                  //                                                           MyText(
-                                                  //                                                             text: '${(waitingTime / 60).toInt()} ${languages[choosenLanguage]['text_mins']}',
-                                                  //                                                             size: media.width * twelve,
-                                                  //                                                             color: isDarkTheme == true ? Colors.black : textColor,
-                                                  //                                                           ),
-                                                  //                                                         ],
-                                                  //                                                       ),
-                                                  //                                                     ],
-                                                  //                                                   )
-                                                  //                                                 : Container()
-                                                  //                                             : Container(),
-                                                  //                                   )
-                                                  //                                 : Container()
-                                                  //                             : (distTime != null && (driverReq['drop_address'] != null && driverReq['is_trip_start'] == 1))
-                                                  //                                 ? Container(
-                                                  //                                     margin: EdgeInsets.only(left: media.width * 0.02),
-                                                  //                                     padding: EdgeInsets.only(left: media.width * 0.02, right: media.width * 0.02),
-                                                  //                                     decoration: BoxDecoration(color: Colors.green.withOpacity(0.2), borderRadius: BorderRadius.circular(media.width * 0.04)),
-                                                  //                                     child: MyText(color: online, text: '${double.parse(((distTime * 2)).toString()).round()} ${languages[choosenLanguage]['text_mins']}', size: media.width * twelve),
-                                                  //                                   )
-                                                  //                                 : Container(),
-                                                  //                       ],
-                                                  //                     ),
-                                                  //                     SizedBox(
-                                                  //                       height:
-                                                  //                           media.width * 0.05,
-                                                  //                     ),
-                                                  //                     Column(
-                                                  //                         children: [
-                                                  //                           Container(
-                                                  //                             padding: EdgeInsets.all(media.width * 0.025),
-                                                  //                             width: media.width * 0.9,
-                                                  //                             color: borderLines.withOpacity(0.1),
-                                                  //                             child: Column(
-                                                  //                               crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                               children: [
-                                                  //                                 Column(
-                                                  //                                   crossAxisAlignment: CrossAxisAlignment.end,
-                                                  //                                   children: [
-                                                  //                                     SizedBox(
-                                                  //                                       height: media.width * 0.02,
-                                                  //                                     ),
-                                                  //                                     Row(
-                                                  //                                       children: [
-                                                  //                                         if (driverReq['userDetail']['data']['profile_picture'] != null)
-                                                  //                                           Container(
-                                                  //                                             height: media.width * 0.15,
-                                                  //                                             width: media.width * 0.15,
-                                                  //                                             decoration: BoxDecoration(
-                                                  //                                               shape: BoxShape.circle,
-                                                  //                                               image: DecorationImage(
-                                                  //                                                   image: NetworkImage(
-                                                  //                                                     driverReq['userDetail']['data']['profile_picture'].toString(),
-                                                  //                                                   ),
-                                                  //                                                   fit: BoxFit.cover),
-                                                  //                                             ),
-                                                  //                                           ),
-                                                  //                                         SizedBox(
-                                                  //                                           width: media.width * 0.03,
-                                                  //                                         ),
-                                                  //                                         SizedBox(
-                                                  //                                           height: media.width * 0.01,
-                                                  //                                         ),
-                                                  //                                         Expanded(
-                                                  //                                           child: Column(
-                                                  //                                             crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                             children: [
-                                                  //                                               MyText(text: driverReq['userDetail']['data']['name'], size: media.width * sixteen, fontweight: FontWeight.w500),
-                                                  //                                               SizedBox(
-                                                  //                                                 height: media.width * 0.01,
-                                                  //                                               ),
-                                                  //                                               Row(
-                                                  //                                                 crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                 mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                 children: [
-                                                  //                                                   Icon(
-                                                  //                                                     Icons.star,
-                                                  //                                                     color: theme,
-                                                  //                                                     size: media.width * 0.05,
-                                                  //                                                   ),
-                                                  //                                                   SizedBox(
-                                                  //                                                     width: media.width * 0.005,
-                                                  //                                                   ),
-                                                  //                                                   Expanded(
-                                                  //                                                     child: MyText(
-                                                  //                                                       color: Colors.grey,
-                                                  //                                                       text: (driverReq['userDetail']['data']['rating'] == 0) ? '0.0' : driverReq['userDetail']['data']['rating'].toString(),
-                                                  //                                                       size: media.width * fourteen,
-                                                  //                                                       fontweight: FontWeight.w600,
-                                                  //                                                       maxLines: 1,
-                                                  //                                                     ),
-                                                  //                                                   ),
-                                                  //                                                 ],
-                                                  //                                               ),
-                                                  //                                             ],
-                                                  //                                           ),
-                                                  //                                         ),
-                                                  //                                       ],
-                                                  //                                     ),
-                                                  //                                   ],
-                                                  //                                 ),
-                                                  //                                 SizedBox(
-                                                  //                                   height: media.width * 0.03,
-                                                  //                                 ),
-                                                  //                                 if (driverReq['is_trip_start'] != 1)
-                                                  //                                   Row(
-                                                  //                                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                                  //                                     children: [
-                                                  //                                       InkWell(
-                                                  //                                         onTap: () async {
-                                                  //                                           Navigator.push(context, MaterialPageRoute(builder: (context) => const ChatPage()));
-                                                  //                                         },
-                                                  //                                         child: Container(
-                                                  //                                           // width: 275,
-                                                  //                                           // height: 49,
-                                                  //                                           width: media.width * 0.725,
-                                                  //                                           height: media.width * 0.125,
-                                                  //                                           decoration: BoxDecoration(color: boxColors, borderRadius: BorderRadius.circular(44)),
-                                                  //                                           child: StreamBuilder(
-                                                  //                                               stream: null,
-                                                  //                                               builder: (context, snapshot) {
-                                                  //                                                 return Row(
-                                                  //                                                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                                  //                                                   children: [
-                                                  //                                                     SizedBox(
-                                                  //                                                       width: media.width * 0.05,
-                                                  //                                                     ),
-                                                  //                                                     const Icon(
-                                                  //                                                       Icons.message,
-                                                  //                                                       color: Colors.grey,
-                                                  //                                                     ),
-                                                  //                                                     SizedBox(
-                                                  //                                                       width: media.width * 0.025,
-                                                  //                                                     ),
-                                                  //                                                     Expanded(
-                                                  //                                                       child: MyText(
-                                                  //                                                         color: (chatList.where((element) => element['from_type'] == 1 && element['seen'] == 0).isNotEmpty) ? theme : Colors.grey,
-                                                  //                                                         text: languages[choosenLanguage]['text_chatwithuser'],
-                                                  //                                                         size: media.width * fourteen,
-                                                  //                                                         fontweight: FontWeight.w400,
-                                                  //                                                       ),
-                                                  //                                                     ),
-                                                  //                                                     if (chatList.where((element) => element['from_type'] == 1 && element['seen'] == 0).isNotEmpty)
-                                                  //                                                       Row(
-                                                  //                                                         children: [
-                                                  //                                                           SizedBox(
-                                                  //                                                             width: media.width * 0.025,
-                                                  //                                                           ),
-                                                  //                                                           MyText(
-                                                  //                                                             text: chatList.where((element) => element['from_type'] == 1 && element['seen'] == 0).length.toString(),
-                                                  //                                                             size: media.width * sixteen,
-                                                  //                                                             fontweight: FontWeight.w500,
-                                                  //                                                             color: theme,
-                                                  //                                                           )
-                                                  //                                                         ],
-                                                  //                                                       ),
-                                                  //                                                     SizedBox(
-                                                  //                                                       width: media.width * 0.05,
-                                                  //                                                     ),
-                                                  //                                                   ],
-                                                  //                                                 );
-                                                  //                                               }),
-                                                  //                                         ),
-                                                  //                                       ),
-                                                  //                                       // InkWell(
-                                                  //                                       //   onTap: () {
-                                                  //                                       //     makingPhoneCall(driverReq['userDetail']['data']['mobile']);
-                                                  //                                       //   },
-                                                  //                                       //   child: Container(
-                                                  //                                       //     height: media.width * 0.096,
-                                                  //                                       //     width: media.width * 0.096,
-                                                  //                                       //     decoration: BoxDecoration(border: Border.all(color: const Color(0xff5BDD0A), width: 1), shape: BoxShape.circle),
-                                                  //                                       //     alignment: Alignment.center,
-                                                  //                                       //     child: Image.asset(
-                                                  //                                       //       'assets/images/Call.png',
-                                                  //                                       //       color: const Color(0xff5BDD0A),
-                                                  //                                       //       height: media.width * 0.05,
-                                                  //                                       //       width: media.width * 0.05,
-                                                  //                                       //       fit: BoxFit.contain,
-                                                  //                                       //     ),
-                                                  //                                       //   ),
-                                                  //                                       // ),
-                                                  //                                     ],
-                                                  //                                   ),
-
-                                                  //                                 SizedBox(
-                                                  //                                   height: media.width * 0.02,
-                                                  //                                 ),
-                                                  //                               ],
-                                                  //                             ),
-                                                  //                           ),
-                                                  //                           SizedBox(
-                                                  //                             height: media.width * 0.03,
-                                                  //                           ),
-                                                  //                           (driverReq['is_trip_start'] == 1)
-                                                  //                               ? Container()
-                                                  //                               : Row(
-                                                  //                                   mainAxisAlignment: MainAxisAlignment.center,
-                                                  //                                   children: [
-                                                  //                                     InkWell(
-                                                  //                                       onTap: () async {
-                                                  //                                         setState(() {
-                                                  //                                           _isLoading = true;
-                                                  //                                         });
-                                                  //                                         var val = await cancelReason((driverReq['is_driver_arrived'] == 0) ? 'before' : 'after');
-                                                  //                                         if (val == true) {
-                                                  //                                           setState(() {
-                                                  //                                             cancelRequest = true;
-                                                  //                                             _cancelReason = '';
-                                                  //                                             _cancellingError = '';
-                                                  //                                           });
-                                                  //                                         }
-                                                  //                                         setState(() {
-                                                  //                                           _isLoading = false;
-                                                  //                                         });
-                                                  //                                       },
-                                                  //                                       child: Row(
-                                                  //                                         children: [
-                                                  //                                           Image.asset(
-                                                  //                                             'assets/images/cancelride.png',
-                                                  //                                             height: media.width * 0.064,
-                                                  //                                             width: media.width * 0.064,
-                                                  //                                             fit: BoxFit.contain,
-                                                  //                                             color: verifyDeclined,
-                                                  //                                           ),
-                                                  //                                           MyText(
-                                                  //                                             text: languages[choosenLanguage]['text_cancel_booking'],
-                                                  //                                             size: media.width * twelve,
-                                                  //                                             color: verifyDeclined,
-                                                  //                                           ),
-                                                  //                                         ],
-                                                  //                                       ),
-                                                  //                                     ),
-                                                  //                                   ],
-                                                  //                                 ),
-
-                                                  //                         ]),
-                                                  //                     SizedBox(
-                                                  //                       height:
-                                                  //                           media.width * 0.03,
-                                                  //                     ),
-                                                  //                     (driverReq['transport_type'] == 'taxi')
-                                                  //                         ? Button(
-                                                  //                             onTap: () async {
-                                                  //                               navigationtype = false;
-                                                  //                               setState(() {
-                                                  //                                 _isLoading = true;
-                                                  //                               });
-                                                  //                               if ((driverReq['is_driver_arrived'] == 0)) {
-                                                  //                                 var val = await driverArrived();
-                                                  //                                 if (val == 'logout') {
-                                                  //                                   navigateLogout();
-                                                  //                                 }
-                                                  //                               } else if (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0) {
-                                                  //                                 if (driverReq['show_otp_feature'] == true) {
-                                                  //                                   setState(() {
-                                                  //                                     _errorOtp = false;
-                                                  //                                     getStartOtp = true;
-                                                  //                                   });
-                                                  //                                 } else {
-                                                  //                                   var val = await tripStartDispatcher();
-                                                  //                                   if (val == 'logout') {
-                                                  //                                     navigateLogout();
-                                                  //                                   }
-                                                  //                                 }
-                                                  //                               } else {
-                                                  //                                 driverOtp = '';
-                                                  //                                 var val = await endTrip();
-                                                  //                                 if (val == 'logout') {
-                                                  //                                   navigateLogout();
-                                                  //                                 }
-                                                  //                               }
-
-                                                  //                               _isLoading = false;
-                                                  //                             },
-                                                  //                             text: (driverReq['is_driver_arrived'] == 0)
-                                                  //                                 ? languages[choosenLanguage]['text_arrived']
-                                                  //                                 : (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0)
-                                                  //                                     ? languages[choosenLanguage]['text_startride']
-                                                  //                                     : languages[choosenLanguage]['text_endtrip'])
-                                                  //                         : Button(
-                                                  //                             onTap: () async {
-                                                  //                               navigationtype = false;
-                                                  //                               setState(() {
-                                                  //                                 _isLoading = true;
-                                                  //                               });
-                                                  //                               if ((driverReq['is_driver_arrived'] == 0)) {
-                                                  //                                 var val = await driverArrived();
-                                                  //                                 if (val == 'logout') {
-                                                  //                                   navigateLogout();
-                                                  //                                 }
-                                                  //                               } else if (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0) {
-                                                  //                                 if (driverReq['show_otp_feature'] == false && driverReq['enable_shipment_load_feature'].toString() == '0') {
-                                                  //                                   var val = await tripStartDispatcher();
-                                                  //                                   if (val == 'logout') {
-                                                  //                                     navigateLogout();
-                                                  //                                   }
-                                                  //                                 } else {
-                                                  //                                   setState(() {
-                                                  //                                     shipLoadImage = null;
-                                                  //                                     _errorOtp = false;
-                                                  //                                     getStartOtp = true;
-                                                  //                                   });
-                                                  //                                 }
-                                                  //                               } else {
-                                                  //                                 if (driverReq['enable_shipment_unload_feature'].toString() == '1') {
-                                                  //                                   setState(() {
-                                                  //                                     unloadImage = true;
-                                                  //                                   });
-                                                  //                                 } else if (driverReq['enable_shipment_unload_feature'].toString() == '0' && driverReq['enable_digital_signature'].toString() == '1') {
-                                                  //                                   Navigator.push(context, MaterialPageRoute(builder: (context) => const DigitalSignature()));
-                                                  //                                 } else {
-                                                  //                                   var val = await endTrip();
-                                                  //                                   if (val == 'logout') {
-                                                  //                                     navigateLogout();
-                                                  //                                   }
-                                                  //                                 }
-                                                  //                               }
-
-                                                  //                               _isLoading = false;
-                                                  //                             },
-                                                  //                             text: (driverReq['is_driver_arrived'] == 0)
-                                                  //                                 ? languages[choosenLanguage]['text_arrived']
-                                                  //                                 : (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0)
-                                                  //                                     ? languages[choosenLanguage]['text_shipment_load']
-                                                  //                                     : languages[choosenLanguage]['text_shipment_unload']),
-
-                                                  //                     SizedBox(
-                                                  //                       height:
-                                                  //                           media.width * 0.05,
-                                                  //                     ),
-                                                  //                     Expanded(
-                                                  //                       child:
-                                                  //                           SingleChildScrollView(
-                                                  //                         controller: _cont,
-                                                  //                         physics: (addressBottom != null && addressBottom <= (media.height * 0.25)) ? const BouncingScrollPhysics() : const NeverScrollableScrollPhysics(),
-                                                  //                         child: Column(
-                                                  //                           children: [
-                                                  //                             if (driverReq['transport_type'] == 'delivery')
-                                                  //                               Column(
-                                                  //                                 children: [
-                                                  //                                   SizedBox(
-                                                  //                                     height: media.width * 0.02,
-                                                  //                                   ),
-                                                  //                                   SizedBox(
-                                                  //                                     width: media.width * 0.9,
-                                                  //                                     child: Text(
-                                                  //                                       '${driverReq['goods_type']} - ${driverReq['goods_type_quantity']}',
-                                                  //                                       style: GoogleFonts.notoSans(fontSize: media.width * fourteen, fontWeight: FontWeight.w600, color: buttonColor),
-                                                  //                                       textAlign: TextAlign.center,
-                                                  //                                       maxLines: 2,
-                                                  //                                       overflow: TextOverflow.ellipsis,
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                                   SizedBox(
-                                                  //                                     height: media.width * 0.02,
-                                                  //                                   ),
-                                                  //                                 ],
-                                                  //                               ),
-                                                  //                             Column(
-                                                  //                               children: addressList
-                                                  //                                   .asMap()
-                                                  //                                   .map((k, value) => MapEntry(
-                                                  //                                       k,
-                                                  //                                       (addressList[k].type == 'pickup')
-                                                  //                                           ? Column(
-                                                  //                                               crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                               children: [
-                                                  //                                                 Container(
-                                                  //                                                   width: media.width * 0.9,
-                                                  //                                                   padding: EdgeInsets.all(media.width * 0.03),
-                                                  //                                                   margin: EdgeInsets.only(bottom: media.width * 0.02),
-                                                  //                                                   decoration: BoxDecoration(color: Colors.grey.withOpacity(0.1), borderRadius: BorderRadius.circular(media.width * 0.02)),
-                                                  //                                                   child: Column(
-                                                  //                                                     crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                     mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                     children: [
-                                                  //                                                       Row(
-                                                  //                                                         crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                         children: [
-                                                  //                                                           Padding(
-                                                  //                                                             padding: const EdgeInsets.all(4.0),
-                                                  //                                                             child: Container(
-                                                  //                                                               width: media.width * 0.05,
-                                                  //                                                               height: media.width * 0.05,
-                                                  //                                                               decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.green.withOpacity(0.4)),
-                                                  //                                                               alignment: Alignment.center,
-                                                  //                                                               child: Container(
-                                                  //                                                                 width: media.width * 0.025,
-                                                  //                                                                 height: media.width * 0.025,
-                                                  //                                                                 decoration: const BoxDecoration(
-                                                  //                                                                   shape: BoxShape.circle,
-                                                  //                                                                   color: Colors.green,
-                                                  //                                                                 ),
-                                                  //                                                               ),
-                                                  //                                                             ),
-                                                  //                                                           ),
-                                                  //                                                           SizedBox(
-                                                  //                                                             width: media.width * 0.02,
-                                                  //                                                           ),
-                                                  //                                                           Expanded(
-                                                  //                                                             child: Column(
-                                                  //                                                               crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                               children: [
-                                                  //                                                                 Row(
-                                                  //                                                                   mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                                   children: [
-                                                  //                                                                     MyText(
-                                                  //                                                                       text: languages[choosenLanguage]['text_pick_up_location'],
-                                                  //                                                                       size: media.width * fourteen,
-                                                  //                                                                       fontweight: FontWeight.w600,
-                                                  //                                                                       color: textColor,
-                                                  //                                                                     ),
-                                                  //                                                                   ],
-                                                  //                                                                 ),
-                                                  //                                                                 MyText(
-                                                  //                                                                   color: greyText,
-                                                  //                                                                   text: (addressList[k].type == 'pickup') ? addressList[k].address : 'nil',
-                                                  //                                                                   size: media.width * twelve,
-                                                  //                                                                   fontweight: FontWeight.normal,
-                                                  //                                                                   maxLines: 5,
-                                                  //                                                                 ),
-                                                  //                                                               ],
-                                                  //                                                             ),
-                                                  //                                                           ),
-                                                  //                                                         ],
-                                                  //                                                       ),
-                                                  //                                                     ],
-                                                  //                                                   ),
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             )
-                                                  //                                           : Container()))
-                                                  //                                   .values
-                                                  //                                   .toList(),
-                                                  //                             ),
-                                                  //                             Column(
-                                                  //                                 children: addressList
-                                                  //                                     .asMap()
-                                                  //                                     .map((k, value) => MapEntry(
-                                                  //                                         k,
-                                                  //                                         (addressList[k].type == 'drop')
-                                                  //                                             ? Column(
-                                                  //                                                 children: [
-                                                  //                                                   (k == addressList.length - 1)
-                                                  //                                                       ? Container(
-                                                  //                                                           width: media.width * 0.9,
-                                                  //                                                           padding: EdgeInsets.all(media.width * 0.03),
-                                                  //                                                           margin: EdgeInsets.only(bottom: media.width * 0.02),
-                                                  //                                                           decoration: BoxDecoration(color: Colors.grey.withOpacity(0.1), borderRadius: BorderRadius.circular(media.width * 0.02)),
-                                                  //                                                           child: Column(
-                                                  //                                                             children: [
-                                                  //                                                               Row(
-                                                  //                                                                 crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                                 children: [
-                                                  //                                                                   Padding(
-                                                  //                                                                     padding: const EdgeInsets.all(4.0),
-                                                  //                                                                     child: Icon(
-                                                  //                                                                       Icons.location_on,
-                                                  //                                                                       size: media.width * 0.05,
-                                                  //                                                                       color: const Color(0xffF52D56),
-                                                  //                                                                     ),
-                                                  //                                                                   ),
-                                                  //                                                                   SizedBox(
-                                                  //                                                                     width: media.width * 0.02,
-                                                  //                                                                   ),
-                                                  //                                                                   Expanded(
-                                                  //                                                                     child: Column(
-                                                  //                                                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                                       children: [
-                                                  //                                                                         Row(
-                                                  //                                                                           mainAxisAlignment: MainAxisAlignment.start,
-                                                  //                                                                           children: [
-                                                  //                                                                             MyText(
-                                                  //                                                                               text: languages[choosenLanguage]['text_droppoint'],
-                                                  //                                                                               size: media.width * fourteen,
-                                                  //                                                                               fontweight: FontWeight.w600,
-                                                  //                                                                               color: textColor,
-                                                  //                                                                             ),
-                                                  //                                                                             // SizedBox(
-                                                  //                                                                             //   width:
-                                                  //                                                                             //       media.width * 0.53,
-                                                  //                                                                             // ),
-                                                  //                                                                             // Icon(
-                                                  //                                                                             //   CupertinoIcons.heart_fill,
-                                                  //                                                                             //   color:
-                                                  //                                                                             //       Colors.white,
-                                                  //                                                                             // )
-                                                  //                                                                             // )
-                                                  //                                                                           ],
-                                                  //                                                                         ),
-                                                  //                                                                         MyText(
-                                                  //                                                                           color: greyText,
-                                                  //                                                                           text: (addressList[k].type == 'drop') ? addressList[k].address : 'nil',
-                                                  //                                                                           size: media.width * twelve,
-                                                  //                                                                           fontweight: FontWeight.normal,
-                                                  //                                                                           maxLines: 5,
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                   ),
-                                                  //                                                                   if (driverReq['transport_type'] == 'delivery' && driverReq['is_trip_start'] == 1)
-                                                  //                                                                     IconButton(
-                                                  //                                                                         onPressed: () {
-                                                  //                                                                           makingPhoneCall(addressList[k].number);
-                                                  //                                                                         },
-                                                  //                                                                         icon: const Icon(Icons.call))
-                                                  //                                                                 ],
-                                                  //                                                               ),
-                                                  //                                                               if (driverReq['transport_type'] == 'delivery' && driverReq['is_trip_start'] == 0)
-                                                  //                                                                 SizedBox(
-                                                  //                                                                   height: media.width * 0.025,
-                                                  //                                                                 ),
-                                                  //                                                               if (addressList[k].instructions != null)
-                                                  //                                                                 Column(
-                                                  //                                                                   children: [
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         for (var i = 0; i < 50; i++)
-                                                  //                                                                           Container(
-                                                  //                                                                             margin: EdgeInsets.only(right: (i < 49) ? 2 : 0),
-                                                  //                                                                             width: (media.width * 0.8 - 98) / 50,
-                                                  //                                                                             height: 1,
-                                                  //                                                                             color: borderColor,
-                                                  //                                                                           )
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                     SizedBox(
-                                                  //                                                                       height: media.width * 0.015,
-                                                  //                                                                     ),
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         MyText(
-                                                  //                                                                           color: Colors.red,
-                                                  //                                                                           text: languages[choosenLanguage]['text_instructions'] + ' :- ',
-                                                  //                                                                           size: media.width * twelve,
-                                                  //                                                                           fontweight: FontWeight.w600,
-                                                  //                                                                           maxLines: 1,
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                     SizedBox(
-                                                  //                                                                       height: media.width * 0.015,
-                                                  //                                                                     ),
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         SizedBox(
-                                                  //                                                                           width: media.width * 0.1,
-                                                  //                                                                         ),
-                                                  //                                                                         Expanded(
-                                                  //                                                                           child: MyText(
-                                                  //                                                                             color: greyText,
-                                                  //                                                                             text: (addressList[k].type == 'drop') ? addressList[k].instructions : 'nil',
-                                                  //                                                                             size: media.width * twelve,
-                                                  //                                                                             fontweight: FontWeight.normal,
-                                                  //                                                                             maxLines: 5,
-                                                  //                                                                           ),
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     )
-                                                  //                                                                   ],
-                                                  //                                                                 ),
-                                                  //                                                             ],
-                                                  //                                                           ),
-                                                  //                                                         )
-                                                  //                                                       : Container(
-                                                  //                                                           width: media.width * 0.9,
-                                                  //                                                           padding: EdgeInsets.all(media.width * 0.03),
-                                                  //                                                           margin: EdgeInsets.only(bottom: media.width * 0.02),
-                                                  //                                                           decoration: BoxDecoration(color: Colors.grey.withOpacity(0.1), borderRadius: BorderRadius.circular(media.width * 0.02)),
-                                                  //                                                           child: Column(
-                                                  //                                                             children: [
-                                                  //                                                               Row(
-                                                  //                                                                 crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                                 children: [
-                                                  //                                                                   Container(
-                                                  //                                                                     height: media.width * 0.05,
-                                                  //                                                                     width: media.width * 0.05,
-                                                  //                                                                     alignment: Alignment.center,
-                                                  //                                                                     child: MyText(
-                                                  //                                                                       text: (k).toString(),
-                                                  //                                                                       size: media.width * fourteen,
-                                                  //                                                                       color: verifyDeclined,
-                                                  //                                                                       fontweight: FontWeight.w600,
-                                                  //                                                                     ),
-                                                  //                                                                   ),
-                                                  //                                                                   SizedBox(
-                                                  //                                                                     width: media.width * 0.02,
-                                                  //                                                                   ),
-                                                  //                                                                   Expanded(
-                                                  //                                                                     child: Column(
-                                                  //                                                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                                                       children: [
-                                                  //                                                                         MyText(
-                                                  //                                                                           color: greyText,
-                                                  //                                                                           text: (addressList[k].type == 'drop') ? addressList[k].address : 'nil',
-                                                  //                                                                           size: media.width * twelve,
-                                                  //                                                                           fontweight: FontWeight.normal,
-                                                  //                                                                           maxLines: 5,
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                   ),
-                                                  //                                                                   if (driverReq['transport_type'] == 'delivery' && driverReq['is_trip_start'] == 1)
-                                                  //                                                                     IconButton(
-                                                  //                                                                         onPressed: () {
-                                                  //                                                                           makingPhoneCall(addressList[k].number);
-                                                  //                                                                         },
-                                                  //                                                                         icon: const Icon(Icons.call))
-                                                  //                                                                 ],
-                                                  //                                                               ),
-                                                  //                                                               if (addressList[k].instructions != null)
-                                                  //                                                                 Column(
-                                                  //                                                                   children: [
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         for (var i = 0; i < 50; i++)
-                                                  //                                                                           Container(
-                                                  //                                                                             margin: EdgeInsets.only(right: (i < 49) ? 2 : 0),
-                                                  //                                                                             width: (media.width * 0.8 - 98) / 50,
-                                                  //                                                                             height: 1,
-                                                  //                                                                             color: borderColor,
-                                                  //                                                                           )
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                     SizedBox(
-                                                  //                                                                       height: media.width * 0.015,
-                                                  //                                                                     ),
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         MyText(
-                                                  //                                                                           color: Colors.red,
-                                                  //                                                                           text: languages[choosenLanguage]['text_instructions'] + ' :- ',
-                                                  //                                                                           size: media.width * twelve,
-                                                  //                                                                           fontweight: FontWeight.w600,
-                                                  //                                                                           maxLines: 1,
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     ),
-                                                  //                                                                     SizedBox(
-                                                  //                                                                       height: media.width * 0.015,
-                                                  //                                                                     ),
-                                                  //                                                                     Row(
-                                                  //                                                                       children: [
-                                                  //                                                                         SizedBox(
-                                                  //                                                                           width: media.width * 0.1,
-                                                  //                                                                         ),
-                                                  //                                                                         Expanded(
-                                                  //                                                                           child: MyText(
-                                                  //                                                                             color: greyText,
-                                                  //                                                                             text: (addressList[k].type == 'drop') ? addressList[k].instructions : 'nil',
-                                                  //                                                                             size: media.width * twelve,
-                                                  //                                                                             fontweight: FontWeight.normal,
-                                                  //                                                                             maxLines: 5,
-                                                  //                                                                           ),
-                                                  //                                                                         ),
-                                                  //                                                                       ],
-                                                  //                                                                     )
-                                                  //                                                                   ],
-                                                  //                                                                 ),
-                                                  //                                                             ],
-                                                  //                                                           ),
-                                                  //                                                         ),
-                                                  //                                                 ],
-                                                  //                                               )
-                                                  //                                             : Container()))
-                                                  //                                     .values
-                                                  //                                     .toList()),
-                                                  //                             SizedBox(
-                                                  //                               height: media.width * 0.025,
-                                                  //                             ),
-                                                  //                             (driverReq['is_luggage_available'] == 1 || driverReq['is_pet_available'] == 1)
-                                                  //                                 ? Column(
-                                                  //                                     children: [
-                                                  //                                       Row(
-                                                  //                                         children: [
-                                                  //                                           MyText(
-                                                  //                                             text: languages[choosenLanguage]['text_ride_preference'] + ' :- ',
-                                                  //                                             size: media.width * fourteen,
-                                                  //                                             fontweight: FontWeight.w600,
-                                                  //                                           ),
-                                                  //                                           SizedBox(
-                                                  //                                             width: media.width * 0.025,
-                                                  //                                           ),
-                                                  //                                           if (driverReq['is_pet_available'] == 1)
-                                                  //                                             Row(
-                                                  //                                               children: [
-                                                  //                                                 Icon(Icons.pets, size: media.width * 0.05, color: theme),
-                                                  //                                                 SizedBox(
-                                                  //                                                   width: media.width * 0.01,
-                                                  //                                                 ),
-                                                  //                                                 MyText(
-                                                  //                                                   text: languages[choosenLanguage]['text_pets'],
-                                                  //                                                   size: media.width * fourteen,
-                                                  //                                                   fontweight: FontWeight.w600,
-                                                  //                                                   color: theme,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                           if (driverReq['is_luggage_available'] == 1 && driverReq['is_pet_available'] == 1)
-                                                  //                                             MyText(
-                                                  //                                               text: ', ',
-                                                  //                                               size: media.width * fourteen,
-                                                  //                                               fontweight: FontWeight.w600,
-                                                  //                                               color: theme,
-                                                  //                                             ),
-                                                  //                                           if (driverReq['is_luggage_available'] == 1)
-                                                  //                                             Row(
-                                                  //                                               children: [
-                                                  //                                                 // Icon(Icons.luggage, size: media.width * 0.05, color: theme),
-                                                  //                                                 SizedBox(
-                                                  //                                                   height: media.width * 0.05,
-                                                  //                                                   width: media.width * 0.075,
-                                                  //                                                   child: Image.asset(
-                                                  //                                                     'assets/images/luggages.png',
-                                                  //                                                     color: theme,
-                                                  //                                                   ),
-                                                  //                                                 ),
-                                                  //                                                 SizedBox(
-                                                  //                                                   width: media.width * 0.01,
-                                                  //                                                 ),
-                                                  //                                                 MyText(
-                                                  //                                                   text: languages[choosenLanguage]['text_luggages'],
-                                                  //                                                   size: media.width * fourteen,
-                                                  //                                                   fontweight: FontWeight.w600,
-                                                  //                                                   color: theme,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                         ],
-                                                  //                                       ),
-                                                  //                                       SizedBox(
-                                                  //                                         height: media.width * 0.025,
-                                                  //                                       ),
-                                                  //                                     ],
-                                                  //                                   )
-                                                  //                                 : Container(),
-                                                  //                             (driverReq['is_rental'] == false && driverReq['drop_address'] == null)
-                                                  //                                 ? Container()
-                                                  //                                 : Container(
-                                                  //                                     width: media.width * 0.9,
-                                                  //                                     padding: EdgeInsets.all(media.width * 0.05),
-                                                  //                                     color: borderColor.withOpacity(0.1),
-                                                  //                                     child: Column(
-                                                  //                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                                  //                                       children: [
-                                                  //                                         MyText(
-                                                  //                                           text: languages[choosenLanguage]['text_payingvia'],
-                                                  //                                           size: media.width * sixteen,
-                                                  //                                           fontweight: FontWeight.w600,
-                                                  //                                           color: textColor,
-                                                  //                                         ),
-                                                  //                                         SizedBox(
-                                                  //                                           height: media.width * 0.025,
-                                                  //                                         ),
-                                                  //                                         Row(
-                                                  //                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                                  //                                           children: [
-                                                  //                                             Expanded(
-                                                  //                                               child: Row(
-                                                  //                                                 children: [
-                                                  //                                                   Image.asset(
-                                                  //                                                     (driverReq['payment_opt'].toString() == '1')
-                                                  //                                                         ? 'assets/images/cash.png'
-                                                  //                                                         : (driverReq['payment_opt'].toString() == '2')
-                                                  //                                                             ? 'assets/images/Wallet.png'
-                                                  //                                                             : 'assets/images/card.png',
-                                                  //                                                     width: media.width * 0.06,
-                                                  //                                                   ),
-                                                  //                                                   SizedBox(
-                                                  //                                                     width: media.width * 0.02,
-                                                  //                                                   ),
-                                                  //                                                   MyText(
-                                                  //                                                       text: (driverReq['payment_opt'].toString() == '1')
-                                                  //                                                           ? languages[choosenLanguage]['text_cash']
-                                                  //                                                           : (driverReq['payment_opt'].toString() == '2')
-                                                  //                                                               ? languages[choosenLanguage]['text_wallet']
-                                                  //                                                               : languages[choosenLanguage]['text_card'],
-                                                  //                                                       size: media.width * fourteen,
-                                                  //                                                       fontweight: FontWeight.w500)
-                                                  //                                                 ],
-                                                  //                                               ),
-                                                  //                                             ),
-                                                  //                                             SizedBox(
-                                                  //                                               width: media.width * 0.02,
-                                                  //                                             ),
-                                                  //                                             Row(
-                                                  //                                               mainAxisAlignment: MainAxisAlignment.end,
-                                                  //                                               children: [
-                                                  //                                                 SizedBox(
-                                                  //                                                   width: media.width * 0.02,
-                                                  //                                                 ),
-                                                  //                                                 MyText(
-                                                  //                                                   text: ((driverReq['is_bid_ride'] == 1)) ? '${driverReq['requested_currency_symbol']}${driverReq['accepted_ride_fare'].toStringAsFixed(0)}' : '${driverReq['requested_currency_symbol']}${driverReq['request_eta_amount'].toStringAsFixed(0)}',
-                                                  //                                                   size: media.width * sixteen,
-                                                  //                                                   fontweight: FontWeight.w600,
-                                                  //                                                   color: textColor,
-                                                  //                                                 ),
-                                                  //                                               ],
-                                                  //                                             ),
-                                                  //                                           ],
-                                                  //                                         ),
-                                                  //                                       ],
-                                                  //                                     ),
-                                                  //                                   ),
-                                                  //                             SizedBox(
-                                                  //                               height: media.height * 0.25,
-                                                  //                             ),
-                                                  //                           ],
-                                                  //                         ),
-                                                  //                       ),
-                                                  //                     )
-
-                                                  //                   ],
-                                                  //                 ),
-                                                  //               ),
-
-                                                  //             ],
-                                                  //           ),
-                                                  //         ),
-                                                  //       )
-                                                  //     : Container(),
                                                 ],
                                               )
                                             : Container(),
@@ -6321,7 +4548,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                         _isLoading = true;
                                                       });
 
-                                                      getLocs();
+                                                      /**
+                                                       * FIXME: FM 
+                                                       */
+                                                      // getLocs();
+                                                      getLocsImproved();
                                                     },
                                                     child: Text(
                                                       languages[choosenLanguage]
@@ -6677,16 +4908,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                     }
                                                   }
                                                 },
-                                                text: languages[choosenLanguage]
-                                                    ['text_confirm'],
-                                                // color:
-                                                //     (driverOtp.length != 4)
-                                                //         ? Colors.grey
-                                                //         : buttonColor,
-                                                // borcolor:
-                                                //     (driverOtp.length != 4)
-                                                //         ? Colors.grey
-                                                //         : buttonColor,
+                                                text: languages[choosenLanguage]['text_confirm'],
                                               )
                                             ],
                                           ),
@@ -8919,137 +7141,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
         ),
       ),
     );
-  }
-
-  double getBearing(LatLng begin, LatLng end) {
-    // double lat = (begin.latitude - end.latitude).abs();
-
-    // double lng = (begin.longitude - end.longitude).abs();
-
-    // if (begin.latitude < end.latitude && begin.longitude < end.longitude) {
-    //   return vector.degrees(atan(lng / lat));
-    // } else if (begin.latitude >= end.latitude &&
-    //     begin.longitude < end.longitude) {
-    //   return (90 - vector.degrees(atan(lng / lat))) + 90;
-    // } else if (begin.latitude >= end.latitude &&
-    //     begin.longitude >= end.longitude) {
-    //   return vector.degrees(atan(lng / lat)) + 180;
-    // } else if (begin.latitude < end.latitude &&
-    //     begin.longitude >= end.longitude) {
-    //   return (90 - vector.degrees(atan(lng / lat))) + 270;
-    // }
-
-    return -1;
-  }
-
-  animateCar(
-      double fromLat, //Starting latitude
-
-      double fromLong, //Starting longitude
-
-      double toLat, //Ending latitude
-
-      double toLong, //Ending longitude
-
-      StreamSink<List<Marker>>
-          mapMarkerSink, //Stream build of map to update the UI
-
-      TickerProvider
-          provider, //Ticker provider of the widget. This is used for animation
-
-      GoogleMapController controller, //Google map controller of our widget
-
-      markerid,
-      icon,
-      name,
-      number) async {
-    final double bearing =
-        getBearing(LatLng(fromLat, fromLong), LatLng(toLat, toLong));
-
-    dynamic carMarker;
-    if (name == '' && number == '') {
-      carMarker = Marker(
-          markerId: MarkerId(markerid),
-          position: LatLng(fromLat, fromLong),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          flat: true,
-          draggable: false);
-    } else {
-      carMarker = Marker(
-          markerId: MarkerId(markerid),
-          position: LatLng(fromLat, fromLong),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          infoWindow: InfoWindow(title: number, snippet: name),
-          flat: true,
-          draggable: false);
-    }
-
-    myMarkers.add(carMarker);
-
-    mapMarkerSink.add(Set<Marker>.from(myMarkers).toList());
-
-    Tween<double> tween = Tween(begin: 0, end: 1);
-
-    _animation = tween.animate(animationController)
-      ..addListener(() async {
-        myMarkers
-            .removeWhere((element) => element.markerId == MarkerId(markerid));
-
-        final v = _animation!.value;
-
-        double lng = v * toLong + (1 - v) * fromLong;
-
-        double lat = v * toLat + (1 - v) * fromLat;
-
-        LatLng newPos = LatLng(lat, lng);
-
-        //New marker location
-
-        if (name == '' && number == '') {
-          carMarker = Marker(
-              markerId: MarkerId(markerid),
-              position: newPos,
-              icon: icon,
-              anchor: const Offset(0.5, 0.5),
-              flat: true,
-              rotation: bearing,
-              draggable: false);
-        } else {
-          carMarker = Marker(
-              markerId: MarkerId(markerid),
-              position: newPos,
-              icon: icon,
-              infoWindow: InfoWindow(title: number, snippet: name),
-              anchor: const Offset(0.5, 0.5),
-              flat: true,
-              rotation: bearing,
-              draggable: false);
-        }
-
-        //Adding new marker to our list and updating the google map UI.
-
-        myMarkers.add(carMarker);
-
-        mapMarkerSink.add(Set<Marker>.from(myMarkers).toList());
-      });
-
-    //Starting the animation
-
-    animationController.forward();
-
-    if (driverReq.isEmpty || driverReq['is_trip_start'] == 1) {
-      controller.getVisibleRegion().then((value) {
-        if (value.contains(myMarkers
-            .firstWhere((element) => element.markerId == MarkerId(markerid))
-            .position)) {
-        } else {
-          controller.animateCamera(CameraUpdate.newLatLng(centerPosition!));
-        }
-      });
-    }
-    animationController = null;
   }
 }
 

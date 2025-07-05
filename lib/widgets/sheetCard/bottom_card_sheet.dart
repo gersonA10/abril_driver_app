@@ -58,8 +58,7 @@ class BottomCardSheet extends StatelessWidget {
                 child: CustomScrollView(
                   controller: scrollController,
                   slivers: [
-                    
-                     SliverToBoxAdapter(
+                    SliverToBoxAdapter(
                       child: Center(
                         child:  Container(
                           color: theme,
