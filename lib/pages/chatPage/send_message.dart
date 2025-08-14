@@ -19,14 +19,29 @@ class SendMessage extends StatefulWidget {
 }
 
 class _SendMessageState extends State<SendMessage> {
+  bool hasRecordPermission = false;
+
   bool isLoadingMessage = false;
   final TextEditingController chatText = TextEditingController();
   final ImagePicker _picker = ImagePicker();
-  final AudioRecorder _recorder = AudioRecorder();
+  final _recorder = AudioRecorder();
   bool isRecording = false;
    final audioService = ChatAudioService();
   bool showSendButton = false;
   Timer? _recordingTimer;
+
+@override
+  void initState() {
+    super.initState();
+    _initPermissions();
+  }
+
+  Future<void> _initPermissions() async {
+    final granted = await _recorder.hasPermission();
+    setState(() {
+      hasRecordPermission = granted;
+    });
+  }
 
     Future<void> selectImage() async {
     showModalBottomSheet(
@@ -79,9 +94,13 @@ class _SendMessageState extends State<SendMessage> {
   }
 
 Future<void> startRecording() async {
-  final hasPermission = await _recorder.hasPermission();
-  if (hasPermission) {
-    // Obtener directorio válido para guardar el audio
+    if (!hasRecordPermission) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se otorgó permiso para grabar audio')),
+      );
+      return;
+    }
+
     Directory directory = await getApplicationDocumentsDirectory();
     String filePath = '${directory.path}/audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
@@ -91,11 +110,12 @@ Future<void> startRecording() async {
     );
 
     setState(() => isRecording = true);
+
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       setState(() {});
     });
   }
-}
+
 
 
   Future<void> stopRecording() async {
@@ -144,35 +164,53 @@ Future<void> startRecording() async {
                 onPressed: selectImage,
               ),
               SizedBox(
-                width: showSendButton ? size.width * 0.52 : size.width * 0.68,
+                width: showSendButton ? size.width * 0.52 : size.width * 0.65,
                 child: TextField(
-  controller: chatText,
-  style: const TextStyle(color: Colors.black), // <-- Aquí defines el color del texto
-  decoration: InputDecoration(
-    labelStyle: const TextStyle(color: Colors.black),
-    hintStyle: const TextStyle(color: Colors.black),
-    hintText: isRecording ? "Grabando audio..." : "Escribe un mensaje",
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(30),
-      borderSide: BorderSide.none,
-    ),
-    filled: true,
-    fillColor: Colors.white,
-  ),
-  onChanged: (text) {
-    setState(() => showSendButton = text.isNotEmpty);
-  },
-),
-
+                  controller: chatText,
+                  style: const TextStyle(color: Colors.black),
+                  decoration: InputDecoration(
+                    labelStyle: const TextStyle(color: Colors.black),
+                    hintStyle: const TextStyle(color: Colors.black),
+                    hintText: isRecording ? "Grabando audio..." : "Escribe un mensaje",
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(30),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                  onChanged: (text) {
+                    setState(() => showSendButton = text.isNotEmpty);
+                  },
+                ),
               ),
-              SizedBox(width: showSendButton ? 50 : 20,),
-              !showSendButton ? 
-              GestureDetector(
-                onLongPress: startRecording,
-                onLongPressUp: stopRecording,
-                child: Icon(Icons.mic, color: isRecording ? Colors.green : theme),
-              ) : Container(),
-              const SizedBox(width: 10,),
+              // SizedBox(width: showSendButton ? 50 : 20,),
+              const Spacer(),
+              !showSendButton 
+               ? GestureDetector(
+                    onLongPress: startRecording,
+                    onLongPressUp: stopRecording,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: isRecording ? 60 : 40,
+                      height: isRecording ? 60 : 40,
+                      decoration: BoxDecoration(
+                        color: isRecording ? Colors.green : theme,
+                        shape: BoxShape.circle,
+                        boxShadow: isRecording
+                            ? [
+                                BoxShadow(
+                                  color: Colors.green.withOpacity(0.6),
+                                  blurRadius: 12,
+                                  spreadRadius: 2,
+                                ),
+                              ]
+                            : [],
+                      ),
+                      child: const Icon(Icons.mic, color: Colors.white, size: 24),
+                    ),
+                  )
+                : const SizedBox.shrink(),
               showSendButton
                   ? GestureDetector(
                       onTap: () async {
@@ -195,6 +233,9 @@ Future<void> startRecording() async {
                       ),
                     )
                   : const SizedBox.shrink(),
+               const SizedBox(
+                width: 5,
+              )
             ],
           ),
         ),

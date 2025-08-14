@@ -100,11 +100,6 @@ class _BottomCardSheetDriverAcceptState
       builder: (context) {
         return Stack(
           children: [
-            // Container(
-            //   color: Colors.black,
-            //   height: 200,
-            //   width: 200,
-            // ),
             SizedBox(
               height: size.height * 1,
               width: size.width * 1,

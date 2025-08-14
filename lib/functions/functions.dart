@@ -1663,6 +1663,25 @@ driverLogin(number, login, password, isOtp) async {
   return result;
 }
 
+
+Future<void> uploadQrImage(File imageFile, String driverId, BuildContext context) async {
+  // final uri = Uri.parse("https://tu-api.com/api/qr/driver");
+  final request = http.MultipartRequest("POST", Uri.parse('${url}api/qr/driver'),);
+
+  request.fields['driver_id'] = driverId;
+  request.files.add(await http.MultipartFile.fromPath('imagen', imageFile.path));
+
+  final response = await request.send();
+
+  if (response.statusCode == 200) {
+    getUserDetails();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("QR cargado correctamente")));
+  } else {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Error al subir el QR")));
+  }
+}
+
+
 Map<String, dynamic> userDetails = {};
 List tripStops = [];
 bool isBackground = false;
@@ -5516,11 +5535,11 @@ rideRequest() {
     valueNotifierHome.incrementNotifier();
   });
   if (waitingList.isEmpty) {
-    isAvailable = null;
+    // isAvailable = null;
   }
 }
 
-dynamic isAvailable;
+// dynamic isAvailable;
 
 sendOTPtoEmail(String email) async {
   dynamic result;

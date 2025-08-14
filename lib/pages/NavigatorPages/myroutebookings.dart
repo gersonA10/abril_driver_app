@@ -438,11 +438,19 @@ class _ChooseHomeAddressState extends State<ChooseHomeAddress> {
                               }),
                           children: [
                             fm.TileLayer(
-                              // minZoom: 10,
-                              urlTemplate:
-                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                              userAgentPackageName: 'com.example.app',
+                              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              tileProvider: fm.NetworkTileProvider(
+                                headers: {
+                                  'User-Agent': 'MiAppDeTarija/1.0 (gerson10107@gmail.com)',
+                                },
+                              ),
                             ),
+                            // fm.TileLayer(
+                            //   // minZoom: 10,
+                            //   urlTemplate:
+                            //       'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            //   userAgentPackageName: 'com.example.app',
+                            // ),
                             const fm.RichAttributionWidget(
                               attributions: [],
                             ),

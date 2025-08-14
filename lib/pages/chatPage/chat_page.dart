@@ -7,6 +7,7 @@ import 'package:abril_driver_app/pages/login/landingpage.dart';
 import 'package:abril_driver_app/pages/login/login.dart';
 import 'package:abril_driver_app/styles/styles.dart';
 import 'package:abril_driver_app/utils/my_logger.dart';
+import 'package:record/record.dart';
 import 'header_chat_widget.dart';
 import 'list_chat_widget.dart';
 
@@ -18,14 +19,14 @@ class ChatPage extends StatefulWidget {
 }
 
 class _ChatPageState extends State<ChatPage> {
+   final _recorder = AudioRecorder();
   ScrollController controller = ScrollController();
   Timer? _chatUpdateTimer;
-  String? requestID; // Ahora es nullable
+  String? requestID;
    @override
   void initState() {
     super.initState();
-    
-    // Validar si userDetails y onTripRequest existen antes de asignar requestID
+    _getRecordPermission();
     if (userDetails != null && userDetails['onTripRequest'] != null) {
       requestID = userDetails['onTripRequest']['data']['id'];
     }
@@ -45,13 +46,9 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-
-  // getMessages() async {
-  //   var val = await getCurrentMessages();
-  //   if (val == 'logout') {
-  //     navigateLogout();
-  //   }
-  // }
+   Future<void> _getRecordPermission() async {
+    await _recorder.hasPermission();
+  }
 
   navigateLogout() {
     if (ownermodule == '1') {
@@ -80,7 +77,7 @@ class _ChatPageState extends State<ChatPage> {
       Navigator.pop(context);
       return Scaffold(
         backgroundColor: theme,
-        body: Center(
+        body: const Center(
           child: Text(
             "Esta conversación ya no está disponible",
             style: TextStyle(color: Colors.white, fontSize: 18),
@@ -91,7 +88,6 @@ class _ChatPageState extends State<ChatPage> {
     return PopScope(
       canPop: true,
       child: Material(
-        // rtl and ltr
         child: Directionality(
           textDirection: (languageDirection == 'rtl')
               ? TextDirection.rtl
@@ -103,17 +99,14 @@ class _ChatPageState extends State<ChatPage> {
               builder: (context, value, child) {
                 Mylogger.printWithTime('Chatpage value notifier home $value');
                 WidgetsBinding.instance.addPostFrameCallback((_) {
-  if (controller.hasClients) {
-    controller.animateTo(
-      controller.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 500),
-      curve: Curves.ease,
-    );
-  }
-});
-
-                //api call for message seen
-                // messageSeen();
+                    if (controller.hasClients) {
+                      controller.animateTo(
+                        controller.position.maxScrollExtent,
+                        duration: const Duration(milliseconds: 500),
+                        curve: Curves.ease,
+                      );
+                    }
+                  });
 
                 return Container(
                   height: media.height * 1,
@@ -129,7 +122,7 @@ class _ChatPageState extends State<ChatPage> {
                       theme,
                       // theme.withOpacity(0.5)/s/s``
                     ],),
-                    image: DecorationImage(image: AssetImage('assets/images/icon_new.png'), opacity: 0.3)
+                    image: const DecorationImage(image: AssetImage('assets/images/icon_new.png'), opacity: 0.3)
                   ),
                   child: Column(
                     children: [

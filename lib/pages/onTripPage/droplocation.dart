@@ -282,9 +282,12 @@ class _DropLocationState extends State<DropLocation>
                                         }),
                                     children: [
                                       fm.TileLayer(
-                                        urlTemplate:
-                                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                        userAgentPackageName: 'com.example.app',
+                                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                        tileProvider: fm.NetworkTileProvider(
+                                          headers: {
+                                            'User-Agent': 'MiAppDeTarija/1.0 (gerson10107@gmail.com)',
+                                          },
+                                        ),
                                       ),
                                       const fm.RichAttributionWidget(
                                         attributions: [],

@@ -77,11 +77,27 @@ void _listenToMessages() {
       stream: _messagesRef.child('requests/${widget.requestID}/array_mensajes').onValue,
       builder: (context, AsyncSnapshot<DatabaseEvent> snapshot) {
         if (!snapshot.hasData || snapshot.data!.snapshot.value == null) {
-          return Center(child: Text(''));
+          return const Center(child: Text(''));
         }
 
         List<dynamic> messages = snapshot.data!.snapshot.value as List<dynamic>;
         messages = messages.where((msg) => msg != null).toList(); 
+
+          final bool isNearBottom =
+            widget.controller.hasClients && widget.controller.position.pixels >= widget.controller.position.maxScrollExtent - 200;
+
+          if (isNearBottom) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (widget.controller.hasClients) {
+              widget.controller.animateTo(
+                widget.controller.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            }
+          });
+        }
+
 
         return SingleChildScrollView(
           controller: widget.controller,

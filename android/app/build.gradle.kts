@@ -17,12 +17,13 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.deabrilconductoresdriver.driver"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 34
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -36,8 +37,8 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24
         targetSdk = 34
-        versionCode = 31
-        versionName = "1.2.8"
+        versionCode = 34
+        versionName = "1.3.1"
     }
 
     android {
@@ -58,6 +59,10 @@ android {
     }
 
 }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {

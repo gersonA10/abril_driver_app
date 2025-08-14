@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:abril_driver_app/functions/functions.dart';
 import 'package:abril_driver_app/pages/deudas/deudas_page.dart';
@@ -8,15 +10,21 @@ import 'package:abril_driver_app/widgets/sheetCard/body_sheet_card.dart';
 import 'package:abril_driver_app/widgets/sheetCard/deudas_contenido.dart';
 import 'package:abril_driver_app/widgets/sheetCard/driver_information.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
-class BottomCardSheet extends StatelessWidget {
+class BottomCardSheet extends StatefulWidget {
   final ValueNotifier<double> bottomSheetOffset;
   const BottomCardSheet({
     super.key,
     required this.bottomSheetOffset,
   });
 
+  @override
+  State<BottomCardSheet> createState() => _BottomCardSheetState();
+}
+
+class _BottomCardSheetState extends State<BottomCardSheet> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
@@ -32,7 +40,7 @@ class BottomCardSheet extends StatelessWidget {
           builder: (context, scrollController) {
             return NotificationListener<DraggableScrollableNotification>(
               onNotification: (notification) {
-                bottomSheetOffset.value = notification.extent;
+                widget.bottomSheetOffset.value = notification.extent;
                 return true;
               },
               child: Container(
@@ -90,6 +98,16 @@ class BottomCardSheet extends StatelessWidget {
                                 image: DecorationImage(image: NetworkImage(userDetails['profile_picture']))
                                 ),
                               ),
+                              userDetails['qr_imagen'] == null 
+                              ? Container()
+                              : Container(
+                                  height: size.height * 0.055,
+                                  width: size.width * 0.2,
+                                  decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      // color: Colors.green,
+                                      image: DecorationImage(image: NetworkImage(userDetails['qr_imagen']))),
+                                ),
                               Container(
                                   height: size.height * 0.055,
                                 width: size.width * 0.2,
@@ -123,6 +141,52 @@ class BottomCardSheet extends StatelessWidget {
                           child: const Divider(),
                         ),
                         BotonVerDeudas(size: size),
+                        SizedBox(
+                        height: size.height * 0.05,
+                        child: Padding(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: size.width * 0.22, vertical: 5),
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: newRedColor,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10))),
+                              onPressed: () async {
+                                final picker = ImagePicker();
+                                final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+
+                                if (pickedFile != null) {
+                                  // Confirmación del usuario
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (_) => AlertDialog(
+                                      title: const Text("Confirmar"),
+                                      content: Image.file(File(pickedFile.path)),
+                                      actions: [
+                                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancelar")),
+                                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("Subir")),
+                                      ],
+                                    ),
+                                  );
+
+                                  if (confirm == true) {
+                                    await uploadQrImage(File(pickedFile.path), userDetails['user_id'].toString(), context);
+                                    setState(() {
+                                      
+                                    });
+                                  }
+                                }
+                              },
+                            child: Text(
+                              'Subir QR',
+                              style: GoogleFonts.aBeeZee(
+                                  color: Colors.white,
+                                  fontSize: size.width * 0.045,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ),
                         const SizedBox(height: 10),
                       ],
                     ),

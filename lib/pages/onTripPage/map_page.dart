@@ -1139,12 +1139,9 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
     final driverID = userDetails['id'];
     int previousMessageCount = 0;
 
-    // Escuchar los mensajes solo si el driver es el asignado
-    requestService
-        .getMessageCountStream(requestId, driverID.toString())
-        .listen((messageCount) {
+    requestService.getMessageCountStream(requestId, driverID.toString()).listen((messageCount) {
       if (previousMessageCount == 0 && messageCount == null) {
-        previousMessageCount = messageCount!;
+        previousMessageCount = messageCount ?? 0;
       } else {
         if (messageCount != null && messageCount > previousMessageCount) {
           _navigateToChat();
@@ -3087,14 +3084,12 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                         : StreamBuilder<List<Marker>>(
                                                             stream: mapMarkerStream,
                                                             builder: (context, snapshot) {
-                                                              // TODO: FM Stream Open Streed Maps Map
                                                               // print('TODO: FM Stream Open Streed Maps Map FALSE');
-                                                              return fm.FlutterMap(
+                                                             return fm.FlutterMap(
                                                                 mapController: _fmController,
                                                                 options: fm.MapOptions(
                                                                   onPositionChanged: (position, bool hasGesture) {
-                                                                    if (hasGesture)
-                                                                      _onCameraMoveStarted();
+                                                                    if (hasGesture) _onCameraMoveStarted();
                                                                   },
                                                                   initialCenter: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
                                                                   initialZoom: 16,
@@ -3108,199 +3103,168 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                             0,
                                                                             0,
                                                                             0,
-                                                                            255, // Invert colors for red
+                                                                            255,
                                                                             0,
                                                                             -1,
                                                                             0,
                                                                             0,
-                                                                            255, // Invert colors for green
+                                                                            255,
                                                                             0,
                                                                             0,
                                                                             -1,
                                                                             0,
-                                                                            255, // Invert colors for blue
+                                                                            255,
                                                                             0,
                                                                             0,
                                                                             0,
                                                                             1,
-                                                                            0, // Alpha channel remains unchanged
+                                                                            0,
                                                                           ])
-                                                                        : const ColorFilter.mode(
-                                                                            Colors.transparent,
-                                                                            BlendMode.multiply
-                                                                          ),
+                                                                        : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
                                                                     child: fm.TileLayer(
                                                                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                                                      userAgentPackageName: 'com.example.app',
+                                                                      tileProvider: fm.NetworkTileProvider(
+                                                                        headers: {
+                                                                          'User-Agent': 'MiAppDeTarija/1.0 (gerson10107@gmail.com)',
+                                                                        },
+                                                                      ),
                                                                     ),
                                                                   ),
-                                                                  if (driverReq['accepted_at'] != null)
-                                                                    driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0 
-                                                                      ? Container()
-                                                                      : driverReq['is_trip_start'] == 1
-                                                                            ? Container()
-                                                                            : fm.PolylineLayer(
-                                                                                polylines: [
-                                                                                  fm.Polyline(
-                                                                                    points: routePoints,
-                                                                                    color: trazoColor,
-                                                                                    strokeWidth: 6,
-                                                                                  ),
-                                                                                ],
-                                                                              ),
-                                                                  if (endPoint != null)
-                                                                    if (driverReq['accepted_at'] != null)
-                                                                      if (driverReq['is_trip_start'] != 1)
-                                                                        fm.MarkerLayer(
-                                                                          markers: [
-                                                                            fm.Marker(
-                                                                              rotate: true,
-                                                                              height: 55,
-                                                                              width: 55,
-                                                                              point: endPoint!,
-                                                                              child: Container(
-                                                                                //Todo: Aumentar tamano y reconstruir
-                                                                                decoration: BoxDecoration(shape: BoxShape.circle, image: DecorationImage(image: AssetImage(themeProvider.isDarkTheme ? 'assets/gifs/icon-user2.gif' : 'assets/gifs/icon-user1.gif'), fit: BoxFit.contain)),
-                                                                                height: (platform == TargetPlatform.android) ? media.width * 0.05 : media.width * 0.09,
-                                                                                width: (platform == TargetPlatform.android) ? media.width * 0.05 : media.width * 0.09,
-                                                                              ),
-                                                                            )
-                                                                          ],
-                                                                        ),
-                                                                  if (routePoints
-                                                                          .isNotEmpty &&
-                                                                      mostrarRutaDobleTap ==
-                                                                          true)
+                                                                  if (driverReq['accepted_at'] != null &&
+                                                                      driverReq['is_driver_arrived'] != 1 &&
+                                                                      driverReq['is_trip_start'] != 1)
                                                                     fm.PolylineLayer(
-                                                                      // polylineCulling:
-                                                                      //     false,
                                                                       polylines: [
                                                                         fm.Polyline(
-                                                                            points:
-                                                                                routePoints,
-                                                                            strokeWidth:
-                                                                                4.0,
-                                                                            color:
-                                                                                newRedColor),
+                                                                          points: routePoints,
+                                                                          color: trazoColor,
+                                                                          strokeWidth: 6,
+                                                                        ),
                                                                       ],
                                                                     ),
-                                                                  if (dropProvider
-                                                                          .routePointsDestino
-                                                                          .isNotEmpty &&
-                                                                      dropProvider
-                                                                              .mostrardDibujadoDestino ==
-                                                                          true)
+                                                                  if (endPoint != null &&
+                                                                      driverReq['accepted_at'] != null &&
+                                                                      driverReq['is_trip_start'] != 1)
+                                                                    fm.MarkerLayer(
+                                                                      markers: [
+                                                                        fm.Marker(
+                                                                          rotate: true,
+                                                                          width: 60,
+                                                                          height: 60,
+                                                                          point: endPoint!,
+                                                                          child: ClipOval(
+                                                                            child: Image.asset(
+                                                                              themeProvider.isDarkTheme
+                                                                                  ? 'assets/gifs/icon-user2.gif'
+                                                                                  : 'assets/gifs/icon-user1.gif',
+                                                                              fit: BoxFit.contain,
+                                                                            ),
+                                                                          ),
+                                                                        )
+                                                                      ],
+                                                                    ),
+                                                                  if (routePoints.isNotEmpty && mostrarRutaDobleTap == true)
                                                                     fm.PolylineLayer(
-                                                                      // polylineCulling:
-                                                                      //     false,
                                                                       polylines: [
                                                                         fm.Polyline(
-                                                                            points: dropProvider
-                                                                                .routePointsDestino,
-                                                                            strokeWidth:
-                                                                                4.0,
-                                                                            color:
-                                                                                Colors.green),
+                                                                          points: routePoints,
+                                                                          strokeWidth: 4.0,
+                                                                          color: newRedColor,
+                                                                        ),
+                                                                      ],
+                                                                    ),
+                                                                  if (dropProvider.routePointsDestino.isNotEmpty &&
+                                                                      dropProvider.mostrardDibujadoDestino == true)
+                                                                    fm.PolylineLayer(
+                                                                      polylines: [
+                                                                        fm.Polyline(
+                                                                          points: dropProvider.routePointsDestino,
+                                                                          strokeWidth: 4.0,
+                                                                          color: Colors.green,
+                                                                        ),
                                                                       ],
                                                                     ),
                                                                   fm.MarkerLayer(
                                                                     markers: [
-                                                                      //esto marca cuando el driver presiona dos veces sobre la carrera para ver destino
-                                                                      if (dropProvider.mostrardDibujadoDestino ==
-                                                                              true &&
-                                                                          showRequestsOverlay ==
-                                                                              false)
-                                                                        if (latitudeDestino! != 0.0 && longitudeDestino! != 0.0 ||
-                                                                            latitudeDestino != null &&
-                                                                                longitudeDestino != null)
-                                                                          fm.Marker(
-                                                                            rotate:
-                                                                                true,
-                                                                            width:
-                                                                                70,
-                                                                            height:
-                                                                                70,
-                                                                            alignment:
-                                                                                Alignment.topCenter,
-                                                                            point:
-                                                                                fmlt.LatLng(latitudeDestino!, longitudeDestino!),
-                                                                            child:
-                                                                                Column(
-                                                                              children: [
-                                                                                const SizedBox(
-                                                                                  height: 10,
-                                                                                ),
-                                                                                Container(
-                                                                                  decoration: const BoxDecoration(shape: BoxShape.circle, image: DecorationImage(image: AssetImage('assets/images/meta.png'), fit: BoxFit.contain)),
-                                                                                  width: 60,
-                                                                                  height: 60,
-                                                                                ),
-                                                                              ],
+                                                                      if (dropProvider.mostrardDibujadoDestino == true &&
+                                                                          showRequestsOverlay == false &&
+                                                                          latitudeDestino != null &&
+                                                                          longitudeDestino != null)
+                                                                        fm.Marker(
+                                                                          rotate: true,
+                                                                          width: 60,
+                                                                          height: 60,
+                                                                          alignment: Alignment.topCenter,
+                                                                          point: fmlt.LatLng(latitudeDestino!, longitudeDestino!),
+                                                                          child: ClipOval(
+                                                                            child: Image.asset(
+                                                                              'assets/images/meta.png',
+                                                                              fit: BoxFit.contain,
                                                                             ),
                                                                           ),
-                                                                      //esto marca cuando el driver presiona dos veces sobre la carrera
-                                                                      if (showLocationRide ==
-                                                                              true &&
-                                                                          showRequestsOverlay ==
-                                                                              false)
+                                                                        ),
+                                                                      if (showLocationRide == true && showRequestsOverlay == false)
                                                                         fm.Marker(
-                                                                          rotate:
-                                                                              true,
-                                                                          width:
-                                                                              media.width * 0.8,
-                                                                          height:
-                                                                              media.height * 0.1,
-                                                                          alignment:
-                                                                              Alignment.topCenter,
-                                                                          point: fmlt.LatLng(
-                                                                              showRidesLatRecoger!,
-                                                                              showRidesLonRecoger!),
-                                                                          child:
-                                                                              Column(
+                                                                          rotate: true,
+                                                                          width: media.width * 0.8,
+                                                                          height: media.height * 0.1,
+                                                                          alignment: Alignment.topCenter,
+                                                                          point: fmlt.LatLng(showRidesLatRecoger!, showRidesLonRecoger!),
+                                                                          child: Column(
                                                                             children: [
                                                                               Container(
                                                                                 padding: const EdgeInsets.all(5),
                                                                                 decoration: BoxDecoration(
-                                                                                  gradient: LinearGradient(colors: [
-                                                                                    (isDarkTheme == true) ? const Color(0xff000000) : const Color(0xffFFFFFF),
-                                                                                    (isDarkTheme == true) ? const Color(0xff808080) : const Color(0xffEFEFEF),
-                                                                                  ], begin: Alignment.topCenter, end: Alignment.bottomCenter),
+                                                                                  gradient: LinearGradient(
+                                                                                    colors: isDarkTheme
+                                                                                        ? [Color(0xff000000), Color(0xff808080)]
+                                                                                        : [Color(0xffFFFFFF), Color(0xffEFEFEF)],
+                                                                                    begin: Alignment.topCenter,
+                                                                                    end: Alignment.bottomCenter,
+                                                                                  ),
                                                                                   borderRadius: BorderRadius.circular(5),
                                                                                 ),
                                                                                 child: Text(
                                                                                   nombreUsuario ?? '',
-                                                                                  style: GoogleFonts.notoSans(color: textColor, fontSize: (platform == TargetPlatform.android) ? media.width * ten : media.width * twelve),
+                                                                                  style: GoogleFonts.notoSans(
+                                                                                    color: textColor,
+                                                                                    fontSize: media.width *
+                                                                                        (platform == TargetPlatform.android ? ten : twelve),
+                                                                                  ),
                                                                                 ),
                                                                               ),
-                                                                              const SizedBox(
-                                                                                height: 10,
-                                                                              ),
-                                                                              Container(
-                                                                                decoration: BoxDecoration(shape: BoxShape.circle, image: DecorationImage(image: themeProvider.isDarkTheme ? const AssetImage('assets/gifs/icon-user2.gif') : const AssetImage('assets/gifs/icon-user1.gif'), fit: BoxFit.contain)),
-                                                                                height: (platform == TargetPlatform.android) ? media.width * 0.09 : media.width * 0.18,
-                                                                                width: (platform == TargetPlatform.android) ? media.width * 0.09 : media.width * 0.18,
+                                                                              const SizedBox(height: 10),
+                                                                              SizedBox(
+                                                                                width: media.width * 0.1,
+                                                                                height: media.width * 0.1,
+                                                                                child: ClipOval(
+                                                                                  child: Image.asset(
+                                                                                    themeProvider.isDarkTheme
+                                                                                        ? 'assets/gifs/icon-user2.gif'
+                                                                                        : 'assets/gifs/icon-user1.gif',
+                                                                                    fit: BoxFit.contain,
+                                                                                  ),
+                                                                                ),
                                                                               ),
                                                                             ],
                                                                           ),
                                                                         ),
-                                                                        /**
-                                                                         * TODO: FM marcardor en el mapa
-                                                                        */
                                                                       fm.Marker(
-                                                                        key: const ValueKey('driver_marker'), // <- Mantener la misma key
+                                                                        key: ValueKey('driver_marker_${themeProvider.isDarkTheme}'),
                                                                         rotate: true,
                                                                         alignment: Alignment.topCenter,
                                                                         point: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
                                                                         width: 80,
                                                                         height: 80,
-                                                                        child: Image.asset(themeProvider.isDarkTheme ? 'assets/gifs/icon-driver2.gif' : 'assets/gifs/icon-driver1.png'),
+                                                                        child: Image.asset(
+                                                                          themeProvider.isDarkTheme
+                                                                              ? 'assets/gifs/icon-driver2.gif'
+                                                                              : 'assets/gifs/icon-driver1.png',
+                                                                        ),
                                                                       ),
                                                                     ],
                                                                   ),
-                                                                  const fm
-                                                                      .RichAttributionWidget(
-                                                                    attributions: [],
-                                                                  ),
+                                                                  const fm.RichAttributionWidget(attributions: []),
                                                                 ],
                                                               );
                                                             },
@@ -3505,6 +3469,10 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                     ),
                                                                   );
                                                                 }),
+                                                         const SizedBox(
+                                                          height: 10,
+                                                        ),
+                                                       
                                                       ],
                                                     ),
                                                   ),
@@ -4168,32 +4136,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                   color: Colors.transparent,
                                                                   child: InkWell(
                                                                     onTap: () async {
-                                                                      /**
-                                                                       * FIXME: FM - BTN Mi Ubicacion
-                                                                       */
-                                                                      // _onFollowLocationPressed();
-                                                                      // if (locationAllowed == true) {
-                                                                      //   // _fmController.move(fmlt.LatLng(newPosition!.latitude, newPosition!.longitude), 17);
-                                                                      //   print('TODO: FM Current GPS Position LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
-                                                                      //   _fmController.move(currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296), 17);
-                                                                      // } else {
-                                                                      //   if (serviceEnabled == true) {
-                                                                      //     setState(() {
-                                                                      //       _locationDenied = true;
-                                                                      //     });
-                                                                      //   } else {
-                                                                      //     await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
-                                                                      //     setState(() {
-                                                                      //       _isLoading = true;
-                                                                      //     });
-                                                                      //     await getLocs();
-                                                                      //     if (serviceEnabled == true) {
-                                                                      //       setState(() {
-                                                                      //         _locationDenied = true;
-                                                                      //       });
-                                                                      //     }
-                                                                      //   }
-                                                                      // }
 
                                                                       _onFollowLocationPressed();
                                                                       if (locationAllowed == true && _areIconsReady()) {
@@ -4225,6 +4167,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                               ),
                                                             );
                                                           }),
+                                                    
 
                                                   //*Boton de viajes disponibles
                                                   /**

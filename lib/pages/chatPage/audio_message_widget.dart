@@ -71,7 +71,7 @@ class _AudioMessageWidgetState extends State<AudioMessageWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return SizedBox(
       width: 200,
       child: Row(
         children: [
