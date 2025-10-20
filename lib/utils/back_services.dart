@@ -13,15 +13,13 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> initializeService(String driverID) async {
-  FlutterBackgroundService()
-      .invoke('updateAppLifeState', {"AppLifeState": false});
+  FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": false});
   SharedPreferences prefs = await SharedPreferences.getInstance();
   await prefs.setString('id', driverID);
   final service = FlutterBackgroundService();
   await service.configure(
     iosConfiguration: IosConfiguration(),
-    androidConfiguration: AndroidConfiguration(
-        onStart: onStart, isForegroundMode: false, autoStart: true),
+    androidConfiguration: AndroidConfiguration(onStart: onStart, isForegroundMode: false, autoStart: true),
   );
 }
 
@@ -62,7 +60,7 @@ void onStart(ServiceInstance service) async {
     if (service is AndroidServiceInstance) {
       if (await service.isForegroundService()) {
         service.setForegroundNotificationInfo(
-          title: 'Radio Movil 15 de Abril',
+          title: 'Radio Movil 15 Adonay',
           content: 'Aplicación en ejecución',
         );
       }
@@ -78,118 +76,104 @@ void onStart(ServiceInstance service) async {
   }
 }
 
+// lib/utils/back_services.dart
+
 Future<void> checkDriverRequests(
     String driverId, ServiceInstance service, SharedPreferences prefs) async {
-  String? lastRequestId; // Guarda la última solicitud procesada
-  bool isAppAlreadyOpened =
-      false; // Evita múltiples aperturas en una sola ejecución
+  // 🔹 Usamos un Set para llevar un registro de las carreras ya procesadas o en proceso.
+  Set<String> processedRequests =
+      (prefs.getStringList('processedRequests') ?? []).toSet();
 
   final DatabaseReference requestRef =
       FirebaseDatabase.instance.ref('request-meta');
-  final DatabaseReference appStateRef =
-      FirebaseDatabase.instance.ref('drivers/driver_$driverId/app_abierta');
 
-  late StreamSubscription<DatabaseEvent> requestListener;
-  late StreamSubscription<DatabaseEvent> appStateListener;
+  // 🔸 Usamos onChildAdded para detectar solo NUEVAS carreras.
+  final requestListener = requestRef.onChildAdded.listen((event) async {
+    if (!event.snapshot.exists || event.snapshot.value == null) return;
 
-  // Listener para detectar nuevas solicitudes
-  requestListener = requestRef.onValue.listen((event) async {
-    if (event.snapshot.exists) {
-      final data = event.snapshot.value as Map<dynamic, dynamic>;
-      for (var key in data.keys) {
-        final carrera = data[key] as Map<dynamic, dynamic>;
+    final carreraData = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
+    final requestId =
+        carreraData['request_id']?.toString() ?? event.snapshot.key!;
 
-        if (carrera['meta-drivers'] != null) {
-          final metaDrivers = carrera['meta-drivers'] as Map<dynamic, dynamic>;
-
-          // Verifica que el ID del driver esté en la solicitud
-          if (metaDrivers.containsKey(driverId)) {
-            String requestId = carrera['request_id'];
-
-            // Evita abrir la app si esta solicitud ya fue manejada
-            if (lastRequestId == requestId) {
-              log('🛑 Solicitud ya procesada, evitando reapertura...');
-              continue; // Salta esta iteración
-            }
-
-            // Evita abrir la app múltiples veces en rápida sucesión
-            if (isAppAlreadyOpened) {
-              log('🛑 La app ya está en proceso de apertura, evitando múltiples aperturas...');
-              continue;
-            }
-
-            isAppAlreadyOpened = true; // Bloquea más aperturas simultáneas
-
-            final intent = AndroidIntent(
-              action: 'android.intent.action.VIEW',
-              package: 'com.deabrilconductoresdriver.driver',
-              flags: <int>[
-                Flag.FLAG_ACTIVITY_NEW_TASK,
-                Flag.FLAG_ACTIVITY_CLEAR_TOP
-              ],
-            );
-
-            try {
-              await intent.launch();
-              log('🚀 Aplicación abierta por nueva solicitud');
-            } catch (e) {
-              log('❌ Error al abrir la app: $e');
-            }
-
-            FlutterForegroundTask.launchApp(
-                'com.deabrilconductoresdriver.driver');
-            log('📲 Aplicación lanzada desde segundo plano...');
-
-            lastRequestId =
-                requestId; // Guarda el requestId actual como última solicitud procesada
-            await Future.delayed(Duration(
-                seconds:
-                    5)); // Pequeño delay para evitar múltiples eventos seguidos
-            isAppAlreadyOpened =
-                false; // Permite futuras aperturas después del delay
-          }
-        }
-      }
+    // 🔸 Si ya estamos procesando o hemos procesado esta carrera, la ignoramos.
+    if (processedRequests.contains(requestId)) {
+      log('ℹ️ Solicitud $requestId ya está en proceso o fue procesada. Ignorando.');
+      return;
     }
-  });
 
-  // Listener para detectar si la app se cerró inesperadamente
-  appStateListener = appStateRef.onValue.listen((event) async {
-    if (event.snapshot.exists) {
-      bool isAppOpen = event.snapshot.value as bool;
+    log('🆕 Nueva carrera detectada: $requestId. Iniciando escucha de detalles...');
+    processedRequests.add(requestId); // Marcamos como "en proceso" inmediatamente.
 
-      if (!isAppOpen) {
-        log('⚠️ La app se ha cerrado inesperadamente, intentando reabrir...');
+    StreamSubscription<DatabaseEvent>? valueListener;
 
-        final intent = AndroidIntent(
+    // 🔸 Creamos un listener temporal con onValue para ESTA carrera específica.
+    valueListener =
+        requestRef.child(event.snapshot.key!).onValue.listen((snapshot) async {
+      if (!snapshot.snapshot.exists || snapshot.snapshot.value == null) {
+        log('⚠️ El snapshot de la carrera $requestId ya no existe.');
+        valueListener?.cancel(); // Limpiamos el listener si el nodo se borra.
+        processedRequests.remove(requestId);
+        prefs.setStringList('processedRequests', processedRequests.toList());
+        return;
+      }
+
+      final carrera =
+          Map<dynamic, dynamic>.from(snapshot.snapshot.value as Map);
+
+      // ✅ Verificamos que todos los datos necesarios estén presentes.
+      if (carrera['meta-drivers'] != null &&
+          (carrera['meta-drivers'] as Map).containsKey(driverId) &&
+          carrera['active'] == 1) {
+        
+        log('✅ Datos completos para la carrera $requestId. Abriendo la app...');
+
+        // 🛑 Cancelamos el listener temporal INMEDIATAMENTE para no volver a reaccionar.
+        valueListener?.cancel();
+
+        // Lanzamos la app
+        const intent = AndroidIntent(
           action: 'android.intent.action.VIEW',
           package: 'com.deabrilconductoresdriver.driver',
           flags: <int>[
             Flag.FLAG_ACTIVITY_NEW_TASK,
-            Flag.FLAG_ACTIVITY_CLEAR_TOP
+            Flag.FLAG_ACTIVITY_CLEAR_TOP,
           ],
         );
 
         try {
           await intent.launch();
-          log('🚀 Aplicación reabierta debido a cierre inesperado');
+          FlutterForegroundTask.launchApp(
+              'com.deabrilconductoresdriver.driver');
+          log('📲 Aplicación abierta desde segundo plano para $requestId.');
         } catch (e) {
-          log('❌ Error al intentar abrir la app: $e');
+          log('❌ Error al abrir la app: $e');
         }
 
-        FlutterForegroundTask.launchApp('com.deabrilconductoresdriver.driver');
-        log('📲 Aplicación relanzada desde segundo plano...');
+        // Limpiamos la solicitud de la lista de "en proceso" después de un tiempo prudencial.
+        // Esto es por si el usuario rechaza y la solicitud vuelve a aparecer.
+        Future.delayed(const Duration(minutes: 2), () {
+          processedRequests.remove(requestId);
+          prefs.setStringList('processedRequests', processedRequests.toList());
+        });
+      } else {
+        log('⏳ Esperando datos completos para la carrera $requestId...');
       }
-    }
+    });
+
+    // 🔹 Un temporizador de seguridad por si los datos nunca llegan completos.
+    Future.delayed(const Duration(seconds: 20), () {
+      valueListener?.cancel();
+      processedRequests.remove(requestId);
+      prefs.setStringList('processedRequests', processedRequests.toList());
+      log('⌛️ Tiempo de espera agotado para la carrera $requestId. Listener cancelado.');
+    });
   });
 
+  // Limpieza al detener el servicio
   service.on('stop').listen((event) {
     requestListener.cancel();
-    appStateListener.cancel();
   });
 }
-
-
 
 void startLocationUpdates(String? driverId) {
   const LocationSettings locationSettings = LocationSettings(
@@ -197,9 +181,8 @@ void startLocationUpdates(String? driverId) {
     distanceFilter: 10,
   );
 
- locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-    Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best);
+  locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+    Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
 
     SharedPreferences prefs = await SharedPreferences.getInstance();
     prefs.setDouble('currentLatitude', position.latitude);
@@ -220,9 +203,7 @@ void startLocationUpdates(String? driverId) {
           'updated_at': ServerValue.timestamp,
         });
 
-        await firebase
-            .child('historial/$driverId/$formattedDate/$formattedTime')
-            .update({
+        await firebase.child('historial/$driverId/$formattedDate/$formattedTime').update({
           'lat': position.latitude,
           'lng': position.longitude,
         });

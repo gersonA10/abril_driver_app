@@ -1,6 +1,8 @@
+// lib/widgets/show_rides.dart
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:developer';
 
 import 'package:abril_driver_app/functions/functions.dart';
 import 'package:abril_driver_app/functions/rides_services/fetch_data_client_ride.dart';
@@ -39,26 +41,16 @@ class ShowRides extends StatefulWidget {
 }
 
 class _ShowRidesState extends State<ShowRides> {
-  double _speechRate = 0.5;
-  bool isSpeaking = false;
-  bool _showAcceptOverlay = false;
-
-  final Queue<String> _textQueue = Queue();
-  final FlutterTts _flutterTts = FlutterTts();
   late ThemeProvider _themeProvider;
-  late SpeechProvider _speechProvider;
   int driverId = userDetails['id'];
 
   List<double> _cardOffsets = [];
   List<Color> _cardColors = [];
-  List<String> _placeNames = [];
   List<String> _placeDestinations = [];
 
   @override
   void initState() {
     super.initState();
-    _loadSpeechRate();
-    _initTts();
     _initializeLists();
     _fetchPlaceNames();
   }
@@ -69,58 +61,34 @@ class _ShowRidesState extends State<ShowRides> {
       widget.listRequests.length,
       (_) => Colors.white,
     );
-    _placeNames = List.filled(widget.listRequests.length, 'Cargando...');
     _placeDestinations = List.filled(widget.listRequests.length, 'Cargando...');
   }
 
-  Future<void> _loadSpeechRate() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _speechRate = prefs.getDouble('speechRate') ?? 0.5;
-    });
-  }
-
-  void _initTts() {
-    _flutterTts
-      ..setLanguage('es-ES')
-      ..setPitch(1.0)
-      ..setSpeechRate(_speechRate)
-      ..setCompletionHandler(() {
-        setState(() => isSpeaking = false);
-        _readNext();
-      });
-  }
-
   Future<void> _fetchPlaceNames() async {
-    final prefs = await SharedPreferences.getInstance();
-    final readIds = prefs.getStringList('readRequestIds') ?? [];
-
     for (var i = 0; i < widget.listRequests.length; i++) {
-      final req = widget.listRequests[i];
-      if (!readIds.contains(req.requestId)) {
-        try {
-          final dest = await getPlaceName(req.destinoLat!, req.destinoLong!) ?? '';
+      try {
+        final req = widget.listRequests[i];
+        if (req.destinoLat != 0.0 && req.destinoLong != 0.0) {
+          final dest = await getPlaceName(req.destinoLat!, req.destinoLong!) ?? 'Destino no especificado';
+          if (mounted) {
+            setState(() {
+              _placeDestinations[i] = dest;
+            });
+          }
+        } else {
+           if (mounted) {
+            setState(() {
+              _placeDestinations[i] = 'Destino no especificado';
+            });
+          }
+        }
+      } catch (_) {
+        if (mounted) {
           setState(() {
-            _placeDestinations[i] = dest;
-            _placeNames[i] = req.textoZona;
+            _placeDestinations[i] = 'Destino no especificado';
           });
-          _textQueue.add(req.textoZona);
-          _readNext();
-          readIds.add(req.requestId);
-          await prefs.setStringList('readRequestIds', readIds);
-        } catch (_) {
-          _readNext();
         }
       }
-    }
-  }
-
-  Future<void> _readNext() async {
-    if (_textQueue.isNotEmpty && !isSpeaking) {
-      final text = _textQueue.removeFirst();
-      setState(() => isSpeaking = true);
-      await _flutterTts.setSpeechRate(_speechRate);
-      await _flutterTts.speak(text);
     }
   }
 
@@ -128,11 +96,19 @@ class _ShowRidesState extends State<ShowRides> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _themeProvider = Provider.of<ThemeProvider>(context);
-    _speechProvider = Provider.of<SpeechProvider>(context, listen: false);
     _cardColors = List.generate(
       widget.listRequests.length,
       (_) => _themeProvider.isDarkTheme ? Colors.grey[800]! : Colors.white,
     );
+  }
+
+  @override
+  void didUpdateWidget(ShowRides oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.listRequests.length != oldWidget.listRequests.length) {
+      _initializeLists();
+      _fetchPlaceNames();
+    }
   }
 
   @override
@@ -186,7 +162,7 @@ class _ShowRidesState extends State<ShowRides> {
                       child: buildRideCard(
                         context,
                         widget.listRequests[idx],
-                        _placeDestinations[idx],
+                        _placeDestinations.isNotEmpty && idx < _placeDestinations.length ? _placeDestinations[idx] : 'Cargando...',
                         '${widget.listRequests[idx].metaDrivers[driverId]?.tiempoMin ?? ''} min',
                         '${widget.listRequests[idx].metaDrivers[driverId]?.distanciaKm ?? ''} km',
                       ),
@@ -197,32 +173,6 @@ class _ShowRidesState extends State<ShowRides> {
             },
           ),
         ),
-        if (_showAcceptOverlay)
-          Positioned.fill(
-            child: Container(
-              color: Colors.black54,
-              child: Center(
-                child: Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 40),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircularProgressIndicator(color: newRedColor,),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Aceptando viaje...',
-                          style: TextStyle(fontSize: 16),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
       ],
     );
   }
@@ -239,10 +189,8 @@ class _ShowRidesState extends State<ShowRides> {
   void _onDragEnd(int idx, DragEndDetails details, DropProvider dropProvider) async {
     final prefs = await SharedPreferences.getInstance();
     if (_cardOffsets[idx] < -150) {
-      setState(() => _showAcceptOverlay = true);
       final req = widget.listRequests[idx];
       await handleRequestAccept(req.requestId, req.recogidaLat!, req.recogidaLong!);
-      setState(() => _showAcceptOverlay = false);
     } else if (_cardOffsets[idx] > 150) {
       widget.rejectedRides.add(widget.listRequests[idx].requestId);
       widget.listRequests.removeAt(idx);
@@ -264,7 +212,8 @@ class _ShowRidesState extends State<ShowRides> {
       await guardarPuntosRuta(points);
       final res = await requestAccept(requestId);
       if (res == 'success') {
-        _flutterTts.speak('Aceptaste el viaje, recoge a tu pasajero');
+        final speechProvider = Provider.of<SpeechProvider>(context, listen: false);
+        speechProvider.flutterTts.speak('Aceptaste el viaje, recoge a tu pasajero');
       }
     } catch (e) {
       debugPrint('Error al aceptar: $e');
@@ -295,7 +244,7 @@ class _ShowRidesState extends State<ShowRides> {
                   child: Text(
                     data.nomUsuario ?? '',
                     style: GoogleFonts.montserrat(
-                      fontSize: 18,
+                      fontSize: 16,
                       fontWeight: FontWeight.w600,
                       color: isDark ? Colors.white : Colors.black,
                     ),
@@ -318,18 +267,18 @@ class _ShowRidesState extends State<ShowRides> {
                 Expanded(
                   child: Text(
                     data.textoZona,
-                    style: TextStyle(fontSize: 14),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 if (data.destinoLong != 0.0)
                   Padding(
                     padding: const EdgeInsets.only(left: 8.0),
-                    child: Image.asset('assets/gifs/gif-destino.gif', width: 24),
+                    child: Image.asset('assets/gifs/gif-destino.gif', width: 26),
                   ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               children: [

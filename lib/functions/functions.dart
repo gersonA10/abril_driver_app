@@ -334,7 +334,7 @@ double calcularDistancia(fmlt.LatLng origen, fmlt.LatLng destino, String flag) {
 
 
 Future<List<fmlt.LatLng>> getRouteFromGraphHopper(double startLat, double startLng, double endLat, double endLng) async {
-  const String apiKey = '55cb099e-7d08-457a-b176-52d07bc27a19'; // Tu clave API de GraphHopper
+  const String apiKey = '55cb099e-7d08-457a-b176-52d07bc27a19'; 
   final String url = 'https://graphhopper.com/api/1/route?key=$apiKey';
 
   final body = jsonEncode({
@@ -342,12 +342,12 @@ Future<List<fmlt.LatLng>> getRouteFromGraphHopper(double startLat, double startL
       [
         startLng, 
         startLat
-        ], // Punto de inicio (con coordenadas invertidas)
+        ],
       [
         endLng, 
         endLat
       ],   
-        // Punto de destino
+
     ],
     "snap_preventions": ["motorway", "ferry", "tunnel"],
     "details": ["road_class", "surface"],
@@ -1736,7 +1736,6 @@ Future<dynamic> getUserDetails() async {
 
           if (payby == 0 && driverReq['is_paid'] == 1) {
             payby = 1;
-            //audioPlayer.play(audio);
           }
           tripStops = userDetails['onTripRequest']['data']['requestStops']['data'];
           addressList.add(AddressList(
@@ -1745,7 +1744,6 @@ Future<dynamic> getUserDetails() async {
               address: driverReq['pick_address'],
               latlng: LatLng(driverReq['pick_lat'], driverReq['pick_lng']),
               name: driverReq['pickup_poc_name'],
-              // pickup: true,
               number: driverReq['pickup_poc_mobile'],
               instructions: driverReq['pickup_poc_instruction']));
           if (tripStops.isNotEmpty) {
@@ -2167,6 +2165,9 @@ driverStatus() async {
           }
         }
 
+        positionStream?.cancel();
+        positionStream = null;
+        stopLocationUpdates(); 
         rideStart?.cancel();
         rideStart = null;
         userInactive();
@@ -2176,6 +2177,7 @@ driverStatus() async {
             screenOn = true;
           }
         }
+        currentPositionUpdate();
         userActive();
       }
       valueNotifierHome.incrementNotifier();
@@ -2447,6 +2449,7 @@ requestDetailsUpdate(
   double lat,
   double lng,
 ) async {
+   if (driverReq['is_trip_start'] != 1) return;
   final firebase = FirebaseDatabase.instance.ref();
   if (driverReq['is_trip_start'] == 1 && driverReq['is_completed'] == 0) {
     if (totalDistance == null) {

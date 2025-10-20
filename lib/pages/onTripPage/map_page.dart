@@ -80,7 +80,7 @@ class Maps extends StatefulWidget {
   State<Maps> createState() => _MapsState();
 }
 
-bool showLocationRide = false;
+// bool showLocationRide = false;
 
 dynamic _center = const LatLng(41.4219057, -102.0840772);
 LatLng? centerPosition;
@@ -118,6 +118,9 @@ List vechiletypeslist = [];
 List<fmlt.LatLng> fmpoly = [];
 
 class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProviderStateMixin {
+  List<String> _anunciosReproducidos = [];
+  Map<String, int> _previousMessageCounts = {};
+  Map<String, StreamSubscription> _messageSubscriptions = {};
   Map<String, dynamic>? datosDeuda;
   fmlt.LatLng? pickupLocation;
   List driverData = [];
@@ -1092,18 +1095,33 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
   void listenToRequestMeta() {
     int driverId = userDetails['id'];
     requestMetaService.getRequestMetaStream().listen((newRequestMetas) {
-      setState(() {
-        requestMetas = newRequestMetas.where((meta) {
-          return meta.metaDrivers.containsKey(driverId) &&
-              !rejectedRides.contains(meta.requestId);
-        }).toList();
+      _messageSubscriptions.forEach((key, subscription) => subscription.cancel());
+      _messageSubscriptions.clear();
 
-        if (requestMetas.isNotEmpty) {
-          showRequestsOverlay = true;
-        } else {
-          showRequestsOverlay = false;
+       setState(() {
+      // Filtra las carreras como ya lo haces
+      requestMetas = newRequestMetas.where((meta) {
+        return meta.metaDrivers.containsKey(driverId) &&
+            !rejectedRides.contains(meta.requestId);
+      }).toList();
+
+      for (var meta in requestMetas) {
+        if (!_anunciosReproducidos.contains(meta.requestId)) {
+          log('📢 Nueva carrera ${meta.requestId} no anunciada. Reproduciendo sonido...');
+
+          audioService.audioPlay('Nueva carrera disponible en ${meta.textoZona}'); 
+
+          _anunciosReproducidos.add(meta.requestId);
         }
-      });
+      }
+
+      if (requestMetas.isNotEmpty) {
+        showRequestsOverlay = true;
+      } else {
+        showRequestsOverlay = false;
+        _anunciosReproducidos.clear();
+      }
+    });
       for (var meta in requestMetas) {
         String requestId = meta.requestId;
 
@@ -1133,31 +1151,46 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
       }
     });
   }
-
   void listenMessages(String requestId) {
-    log('ID PETICION: $requestId');
     final driverID = userDetails['id'];
-    int previousMessageCount = 0;
 
-    requestService.getMessageCountStream(requestId, driverID.toString()).listen((messageCount) {
-      if (previousMessageCount == 0 && messageCount == null) {
-        previousMessageCount = messageCount ?? 0;
-      } else {
-        if (messageCount != null && messageCount > previousMessageCount) {
+    if (_messageSubscriptions.containsKey(requestId)) {
+      _messageSubscriptions[requestId]?.cancel();
+    }
+
+    var subscription = requestService.getMessageCountStream(requestId, driverID.toString()).listen((messageCount) {
+      int previousMessageCount = _previousMessageCounts[requestId] ?? 0;
+      
+      if (messageCount != null && messageCount > previousMessageCount) {
           _navigateToChat();
-        }
-        previousMessageCount = messageCount!;
+      }
+      if (messageCount != null) {
+        _previousMessageCounts[requestId] = messageCount;
       }
     });
+
+    _messageSubscriptions[requestId] = subscription;
   }
 
-  void _navigateToChat() {
-    if (isInChatPage == false) {
-      isInChatPage = true;
-      navigatorKey.currentState
-          ?.push(MaterialPageRoute(builder: (context) => const ChatPage()));
-    }
+
+
+void _navigateToChat() {
+  if (isInChatPage == false) {
+    isInChatPage = true; 
+    log('🗺️ Navegando al chat...');
+    navigatorKey.currentState
+        ?.push(MaterialPageRoute(builder: (context) => const ChatPage()))
+        .then((_) {
+      // Este bloque se ejecuta SIEMPRE al volver de la página de Chat.
+      log('🔙 Regresando del chat. Reseteando estado para futuros mensajes.');
+      if (mounted) {
+         isInChatPage = false; // Permitimos que se vuelva a abrir
+      }
+    });
+  } else {
+    log('⚠️ Intento de abrir el chat mientras ya estaba abierto. Ignorando.');
   }
+}
 
   void listenCancellRides(String requestId) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -1179,10 +1212,10 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
               prefs.remove('latitudeDestino');
               mostrarRutaDobleTap = false;
               dropProvider.mostrardDibujadoDestino = false;
-              showLocationRide = false;
+              // showLocationRide = false;
               isPressed = false;
             });
-            playAudio(); // Reproducir audio solo para el conductor asignado
+            playCancelAudio(); 
             audioPlayed = true;
           }
         });
@@ -1219,17 +1252,20 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
           prefs.remove('puntosRutaDestino');
           mostrarRutaDobleTap = false;
           dropProvider.mostrardDibujadoDestino = false;
-          showLocationRide = false;
+          // showLocationRide = false;
           isPressed = false;
         });
       }
     });
   }
 
-  void playAudio() async {
-    final player = AudioPlayer();
-    await player.play(AssetSource('audio/cliente_cancelo_viaje.mp3'));
-  }
+    void playCancelAudio() async {
+      final player = AudioPlayer();
+      await player.play(AssetSource('audio/cliente_cancelo_viaje.mp3'));
+    }
+
+
+
 
   void _onMapCreated(GoogleMapController controller) {
     setState(() {
@@ -1333,6 +1369,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     animationController?.dispose();
     _timerNew?.cancel();
     super.dispose();
+     _messageSubscriptions.forEach((key, subscription) => subscription.cancel());
     log('App Disponse');
   }
 
@@ -2773,1636 +2810,1768 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                         }
                       }
                     }
-                    return SingleChildScrollView(
-                      child: Stack(
-                        children: [
-                          // if (estaCargando == true)
-                          Container(
-                            color: page,
-                            height: media.height * 1,
-                            width: media.width * 1,
-                            child: Column(
-                              mainAxisAlignment: (state == '1' || state == '2')
-                                  ? MainAxisAlignment.center
-                                  : MainAxisAlignment.start,
-                              children: [
-                                (state == '1')
-                                    ? Container(
-                                        padding:
-                                            EdgeInsets.all(media.width * 0.05),
-                                        width: media.width * 0.6,
-                                        height: media.width * 0.3,
-                                        decoration: BoxDecoration(
-                                            color: page,
-                                            boxShadow: [
-                                              BoxShadow(
-                                                  blurRadius: 5,
-                                                  color: Colors.black
-                                                      .withOpacity(0.2),
-                                                  spreadRadius: 2)
-                                            ],
-                                            borderRadius:
-                                                BorderRadius.circular(10)),
-                                        child: Column(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            Text(
-                                              languages[choosenLanguage]
-                                                  ['text_enable_location'],
-                                              style: GoogleFonts.notoSans(
-                                                  fontSize:
-                                                      media.width * sixteen,
-                                                  color: textColor,
-                                                  fontWeight: FontWeight.bold),
+                    return Stack(
+                      children: [
+                        // if (estaCargando == true)
+                        Container(
+                          color: page,
+                          height: media.height * 1,
+                          width: media.width * 1,
+                          child: Column(
+                            mainAxisAlignment: (state == '1' || state == '2')
+                                ? MainAxisAlignment.center
+                                : MainAxisAlignment.start,
+                            children: [
+                              (state == '1')
+                                  ? Container(
+                                      padding:
+                                          EdgeInsets.all(media.width * 0.05),
+                                      width: media.width * 0.6,
+                                      height: media.width * 0.3,
+                                      decoration: BoxDecoration(
+                                          color: page,
+                                          boxShadow: [
+                                            BoxShadow(
+                                                blurRadius: 5,
+                                                color: Colors.black
+                                                    .withOpacity(0.2),
+                                                spreadRadius: 2)
+                                          ],
+                                          borderRadius:
+                                              BorderRadius.circular(10)),
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            languages[choosenLanguage]
+                                                ['text_enable_location'],
+                                            style: GoogleFonts.notoSans(
+                                                fontSize:
+                                                    media.width * sixteen,
+                                                color: textColor,
+                                                fontWeight: FontWeight.bold),
+                                          ),
+                                          Container(
+                                            alignment: Alignment.centerRight,
+                                            child: InkWell(
+                                              onTap: () {
+                                                setState(() {
+                                                  state = '';
+                                                });
+                    
+                                                /**
+                                                 * FIXME: FM 
+                                                 */
+                                                // getLocs();
+                                                getLocsImproved();
+                                              },
+                                              child: Text(
+                                                languages[choosenLanguage]
+                                                    ['text_ok'],
+                                                style: GoogleFonts.notoSans(
+                                                    fontWeight:
+                                                        FontWeight.bold,
+                                                    fontSize:
+                                                        media.width * twenty,
+                                                    color: buttonColor),
+                                              ),
                                             ),
-                                            Container(
-                                              alignment: Alignment.centerRight,
-                                              child: InkWell(
-                                                onTap: () {
-                                                  setState(() {
-                                                    state = '';
-                                                  });
-
-                                                  /**
-                                                   * FIXME: FM 
-                                                   */
-                                                  // getLocs();
-                                                  getLocsImproved();
-                                                },
-                                                child: Text(
-                                                  languages[choosenLanguage]
-                                                      ['text_ok'],
-                                                  style: GoogleFonts.notoSans(
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize:
-                                                          media.width * twenty,
-                                                      color: buttonColor),
+                                          )
+                                        ],
+                                      ),
+                                    )
+                                  : (state == '2')
+                                      ? Container(
+                                          height: media.height * 1,
+                                          width: media.width * 1,
+                                          alignment: Alignment.center,
+                                          child: Column(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              SizedBox(
+                                                height: media.height * 0.31,
+                                                width: media.width * 0.8,
+                                                child: Image.asset(
+                                                  'assets/images/ubicacion_p.png',
+                                                  fit: BoxFit.contain,
                                                 ),
                                               ),
-                                            )
-                                          ],
-                                        ),
-                                      )
-                                    : (state == '2')
-                                        ? Container(
-                                            height: media.height * 1,
-                                            width: media.width * 1,
-                                            alignment: Alignment.center,
-                                            child: Column(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              children: [
-                                                SizedBox(
-                                                  height: media.height * 0.31,
-                                                  width: media.width * 0.8,
-                                                  child: Image.asset(
-                                                    'assets/images/ubicacion_p.png',
-                                                    fit: BoxFit.contain,
-                                                  ),
+                                              SizedBox(
+                                                height: media.width * 0.05,
+                                              ),
+                                              SizedBox(
+                                                width: media.width * 0.86,
+                                                child: Text(
+                                                  'Radio Movil 15 de Abril es un servicio de Taxis las 24 horas en la ciudad de Tarija, Bolivia.',
+                                                  textAlign: TextAlign.center,
+                                                  style:
+                                                      GoogleFonts.montserrat(
+                                                          color: const Color
+                                                              .fromRGBO(
+                                                              212, 16, 22, 1),
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .bold),
                                                 ),
-                                                SizedBox(
-                                                  height: media.width * 0.05,
-                                                ),
-                                                SizedBox(
-                                                  width: media.width * 0.86,
-                                                  child: Text(
-                                                    'Radio Movil 15 de Abril es un servicio de Taxis las 24 horas en la ciudad de Tarija, Bolivia.',
-                                                    textAlign: TextAlign.center,
+                                              ),
+                                              // Text(
+                                              //   languages[choosenLanguage]
+                                              //       ['text_trustedtaxi'],
+                                              //   style:
+                                              //       GoogleFonts.notoSans(
+                                              //           fontSize:
+                                              //               media.width *
+                                              //                   eighteen,
+                                              //           fontWeight:
+                                              //               FontWeight
+                                              //                   .w600),
+                                              // ),
+                                              SizedBox(
+                                                height: media.width * 0.04,
+                                              ),
+                                              Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_allowpermission1'],
                                                     style:
-                                                        GoogleFonts.montserrat(
-                                                            color: const Color
-                                                                .fromRGBO(
-                                                                212, 16, 22, 1),
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    0.033,
                                                             fontWeight:
                                                                 FontWeight
-                                                                    .bold),
+                                                                    .w500),
                                                   ),
-                                                ),
-                                                // Text(
-                                                //   languages[choosenLanguage]
-                                                //       ['text_trustedtaxi'],
-                                                //   style:
-                                                //       GoogleFonts.notoSans(
-                                                //           fontSize:
-                                                //               media.width *
-                                                //                   eighteen,
-                                                //           fontWeight:
-                                                //               FontWeight
-                                                //                   .w600),
-                                                // ),
-                                                SizedBox(
-                                                  height: media.width * 0.04,
-                                                ),
-                                                Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
+                                                  Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_allowpermission2'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    0.033,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w500),
+                                                  ),
+                                                ],
+                                              ),
+                                              SizedBox(
+                                                height: media.width * 0.08,
+                                              ),
+                                              Container(
+                                                padding: EdgeInsets.fromLTRB(
+                                                    media.width * 0.05,
+                                                    0,
+                                                    media.width * 0.05,
+                                                    0),
+                                                child: Row(
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment.start,
                                                   children: [
-                                                    Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_allowpermission1'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      0.033,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w500),
+                                                    SizedBox(
+                                                      width:
+                                                          media.width * 0.075,
+                                                      child: Icon(
+                                                        Icons.location_on,
+                                                        color: newRedColor,
+                                                      ),
                                                     ),
-                                                    Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_allowpermission2'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      0.033,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w500),
+                                                    SizedBox(
+                                                      width:
+                                                          media.width * 0.025,
+                                                    ),
+                                                    SizedBox(
+                                                      width:
+                                                          media.width * 0.8,
+                                                      child: Text(
+                                                        languages[
+                                                                choosenLanguage]
+                                                            [
+                                                            'text_loc_permission'],
+                                                        style: GoogleFonts
+                                                            .notoSans(
+                                                                fontSize:
+                                                                    media.width *
+                                                                        0.033,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500),
+                                                      ),
                                                     ),
                                                   ],
                                                 ),
-                                                SizedBox(
-                                                  height: media.width * 0.08,
-                                                ),
-                                                Container(
-                                                  padding: EdgeInsets.fromLTRB(
-                                                      media.width * 0.05,
-                                                      0,
-                                                      media.width * 0.05,
-                                                      0),
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment.start,
-                                                    children: [
-                                                      SizedBox(
-                                                        width:
-                                                            media.width * 0.075,
+                                              ),
+                                              SizedBox(
+                                                height: media.width * 0.02,
+                                              ),
+                                              Container(
+                                                padding: EdgeInsets.fromLTRB(
+                                                    media.width * 0.05,
+                                                    0,
+                                                    media.width * 0.05,
+                                                    0),
+                                                child: Row(
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment.start,
+                                                  children: [
+                                                    SizedBox(
+                                                        width: media.width *
+                                                            0.075,
                                                         child: Icon(
                                                           Icons.location_on,
                                                           color: newRedColor,
-                                                        ),
+                                                        )),
+                                                    SizedBox(
+                                                      width:
+                                                          media.width * 0.025,
+                                                    ),
+                                                    SizedBox(
+                                                      width:
+                                                          media.width * 0.8,
+                                                      child: Text(
+                                                        languages[
+                                                                choosenLanguage]
+                                                            [
+                                                            'text_background_permission'],
+                                                        style: GoogleFonts
+                                                            .notoSans(
+                                                                fontSize:
+                                                                    media.width *
+                                                                        0.033,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500),
                                                       ),
-                                                      SizedBox(
-                                                        width:
-                                                            media.width * 0.025,
-                                                      ),
-                                                      SizedBox(
-                                                        width:
-                                                            media.width * 0.8,
-                                                        child: Text(
-                                                          languages[
-                                                                  choosenLanguage]
-                                                              [
-                                                              'text_loc_permission'],
-                                                          style: GoogleFonts
-                                                              .notoSans(
-                                                                  fontSize:
-                                                                      media.width *
-                                                                          0.033,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w500),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
+                                                    ),
+                                                  ],
                                                 ),
+                                              ),
+                                              SizedBox(
+                                                  height:
+                                                      media.height * 0.08),
+                                              ElevatedButton(
+                                                style: ElevatedButton.styleFrom(
+                                                    backgroundColor:
+                                                        newRedColor,
+                                                    shape:
+                                                        RoundedRectangleBorder(
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        10))),
+                                                onPressed: () async {
+                                                  getLocationPermission();
+                                                },
+                                                child: Text(
+                                                  languages[choosenLanguage]
+                                                      ['text_continue'],
+                                                  style:
+                                                      GoogleFonts.montserrat(
+                                                          color: page,
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .bold),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                      : (state == '3')
+                                          ? Stack(
+                                              alignment: Alignment.center,
+                                              children: [
                                                 SizedBox(
-                                                  height: media.width * 0.02,
-                                                ),
-                                                Container(
-                                                  padding: EdgeInsets.fromLTRB(
-                                                      media.width * 0.05,
-                                                      0,
-                                                      media.width * 0.05,
-                                                      0),
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment.start,
-                                                    children: [
-                                                      SizedBox(
-                                                          width: media.width *
-                                                              0.075,
-                                                          child: Icon(
-                                                            Icons.location_on,
-                                                            color: newRedColor,
-                                                          )),
-                                                      SizedBox(
-                                                        width:
-                                                            media.width * 0.025,
-                                                      ),
-                                                      SizedBox(
-                                                        width:
-                                                            media.width * 0.8,
-                                                        child: Text(
-                                                          languages[
-                                                                  choosenLanguage]
-                                                              [
-                                                              'text_background_permission'],
-                                                          style: GoogleFonts
-                                                              .notoSans(
-                                                                  fontSize:
-                                                                      media.width *
-                                                                          0.033,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w500),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                    height:
-                                                        media.height * 0.08),
-                                                ElevatedButton(
-                                                  style: ElevatedButton.styleFrom(
-                                                      backgroundColor:
-                                                          newRedColor,
-                                                      shape:
-                                                          RoundedRectangleBorder(
-                                                              borderRadius:
-                                                                  BorderRadius
-                                                                      .circular(
-                                                                          10))),
-                                                  onPressed: () async {
-                                                    getLocationPermission();
-                                                  },
-                                                  child: Text(
-                                                    languages[choosenLanguage]
-                                                        ['text_continue'],
-                                                    style:
-                                                        GoogleFonts.montserrat(
-                                                            color: page,
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .bold),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          )
-                                        : (state == '3')
-                                            ? Stack(
-                                                alignment: Alignment.center,
-                                                children: [
-                                                  SizedBox(
-                                                    height: media.height * 1,
-                                                    width: media.width * 1,
-                                                    //google maps
-                                                    child: (mapType == 'google')
-                                                        ? StreamBuilder<List<Marker>>(
-                                                            stream: mapMarkerStream,
-                                                            builder: (context, snapshot) {
-                                                              // print('TODO: FM Stream Google Maps');
-                                                              return GoogleMap(
-                                                                padding: EdgeInsets.only(
-                                                                    bottom: media.width * 1,
-                                                                    top: media.height * 0.1 + MediaQuery.of(context).padding.top
-                                                                  ),
-                                                                onMapCreated: _onMapCreated,
-                                                                initialCameraPosition: CameraPosition(
-                                                                  target: (centerPosition == null) ? _center : centerPosition,
-                                                                  zoom: 11.0,
+                                                  height: media.height * 1,
+                                                  width: media.width * 1,
+                                                  //google maps
+                                                  child: (mapType == 'google')
+                                                      ? StreamBuilder<List<Marker>>(
+                                                          stream: mapMarkerStream,
+                                                          builder: (context, snapshot) {
+                                                            // print('TODO: FM Stream Google Maps');
+                                                            return GoogleMap(
+                                                              padding: EdgeInsets.only(
+                                                                  bottom: media.width * 1,
+                                                                  top: media.height * 0.1 + MediaQuery.of(context).padding.top
                                                                 ),
-                                                                markers: Set<Marker>.from(myMarkers),
-                                                                polylines: polyline,
-                                                                minMaxZoomPreference: const MinMaxZoomPreference(0.0, 20.0),
-                                                                myLocationButtonEnabled: false,
-                                                                compassEnabled: false,
-                                                                buildingsEnabled: false,
-                                                                zoomControlsEnabled: false,
-                                                              );
-                                                            },
-                                                          )
-                                                        : StreamBuilder<List<Marker>>(
-                                                            stream: mapMarkerStream,
-                                                            builder: (context, snapshot) {
-                                                              // print('TODO: FM Stream Open Streed Maps Map FALSE');
-                                                             return fm.FlutterMap(
-                                                                mapController: _fmController,
-                                                                options: fm.MapOptions(
-                                                                  onPositionChanged: (position, bool hasGesture) {
-                                                                    if (hasGesture) _onCameraMoveStarted();
-                                                                  },
-                                                                  initialCenter: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
-                                                                  initialZoom: 16,
-                                                                  onTap: (P, L) {},
-                                                                ),
-                                                                children: [
-                                                                  ColorFiltered(
-                                                                    colorFilter: themeProvider.isDarkTheme
-                                                                        ? const ColorFilter.matrix([
-                                                                            -1,
-                                                                            0,
-                                                                            0,
-                                                                            0,
-                                                                            255,
-                                                                            0,
-                                                                            -1,
-                                                                            0,
-                                                                            0,
-                                                                            255,
-                                                                            0,
-                                                                            0,
-                                                                            -1,
-                                                                            0,
-                                                                            255,
-                                                                            0,
-                                                                            0,
-                                                                            0,
-                                                                            1,
-                                                                            0,
-                                                                          ])
-                                                                        : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
-                                                                    child: fm.TileLayer(
-                                                                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                                                      tileProvider: fm.NetworkTileProvider(
-                                                                        headers: {
-                                                                          'User-Agent': 'MiAppDeTarija/1.0 (gerson10107@gmail.com)',
-                                                                        },
-                                                                      ),
+                                                              onMapCreated: _onMapCreated,
+                                                              initialCameraPosition: CameraPosition(
+                                                                target: (centerPosition == null) ? _center : centerPosition,
+                                                                zoom: 11.0,
+                                                              ),
+                                                              markers: Set<Marker>.from(myMarkers),
+                                                              polylines: polyline,
+                                                              minMaxZoomPreference: const MinMaxZoomPreference(0.0, 20.0),
+                                                              myLocationButtonEnabled: false,
+                                                              compassEnabled: false,
+                                                              buildingsEnabled: false,
+                                                              zoomControlsEnabled: false,
+                                                            );
+                                                          },
+                                                        )
+                                                      : StreamBuilder<List<Marker>>(
+                                                          stream: mapMarkerStream,
+                                                          builder: (context, snapshot) {
+                                                            // print('TODO: FM Stream Open Streed Maps Map FALSE');
+                                                           return fm.FlutterMap(
+                                                              mapController: _fmController,
+                                                              options: fm.MapOptions(
+                                                                onPositionChanged: (position, bool hasGesture) {
+                                                                  if (hasGesture) _onCameraMoveStarted();
+                                                                },
+                                                                initialCenter: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
+                                                                initialZoom: 16,
+                                                                onTap: (P, L) {},
+                                                              ),
+                                                              children: [
+                                                                ColorFiltered(
+                                                                  colorFilter: themeProvider.isDarkTheme
+                                                                      ? const ColorFilter.matrix([
+                                                                          -1,
+                                                                          0,
+                                                                          0,
+                                                                          0,
+                                                                          255,
+                                                                          0,
+                                                                          -1,
+                                                                          0,
+                                                                          0,
+                                                                          255,
+                                                                          0,
+                                                                          0,
+                                                                          -1,
+                                                                          0,
+                                                                          255,
+                                                                          0,
+                                                                          0,
+                                                                          0,
+                                                                          1,
+                                                                          0,
+                                                                        ])
+                                                                      : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
+                                                                  child: fm.TileLayer(
+                                                                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                                                    tileProvider: fm.NetworkTileProvider(
+                                                                      headers: {
+                                                                        'User-Agent': 'MiAppDeTarija/1.0 (gerson10107@gmail.com)',
+                                                                      },
                                                                     ),
                                                                   ),
-                                                                  if (driverReq['accepted_at'] != null &&
-                                                                      driverReq['is_driver_arrived'] != 1 &&
-                                                                      driverReq['is_trip_start'] != 1)
-                                                                    fm.PolylineLayer(
-                                                                      polylines: [
-                                                                        fm.Polyline(
-                                                                          points: routePoints,
-                                                                          color: trazoColor,
-                                                                          strokeWidth: 6,
-                                                                        ),
-                                                                      ],
-                                                                    ),
-                                                                  if (endPoint != null &&
-                                                                      driverReq['accepted_at'] != null &&
-                                                                      driverReq['is_trip_start'] != 1)
-                                                                    fm.MarkerLayer(
-                                                                      markers: [
-                                                                        fm.Marker(
-                                                                          rotate: true,
-                                                                          width: 60,
-                                                                          height: 60,
-                                                                          point: endPoint!,
-                                                                          child: ClipOval(
-                                                                            child: Image.asset(
-                                                                              themeProvider.isDarkTheme
-                                                                                  ? 'assets/gifs/icon-user2.gif'
-                                                                                  : 'assets/gifs/icon-user1.gif',
-                                                                              fit: BoxFit.contain,
-                                                                            ),
-                                                                          ),
-                                                                        )
-                                                                      ],
-                                                                    ),
-                                                                  if (routePoints.isNotEmpty && mostrarRutaDobleTap == true)
-                                                                    fm.PolylineLayer(
-                                                                      polylines: [
-                                                                        fm.Polyline(
-                                                                          points: routePoints,
-                                                                          strokeWidth: 4.0,
-                                                                          color: newRedColor,
-                                                                        ),
-                                                                      ],
-                                                                    ),
-                                                                  if (dropProvider.routePointsDestino.isNotEmpty &&
-                                                                      dropProvider.mostrardDibujadoDestino == true)
-                                                                    fm.PolylineLayer(
-                                                                      polylines: [
-                                                                        fm.Polyline(
-                                                                          points: dropProvider.routePointsDestino,
-                                                                          strokeWidth: 4.0,
-                                                                          color: Colors.green,
-                                                                        ),
-                                                                      ],
-                                                                    ),
-                                                                  fm.MarkerLayer(
-                                                                    markers: [
-                                                                      if (dropProvider.mostrardDibujadoDestino == true &&
-                                                                          showRequestsOverlay == false &&
-                                                                          latitudeDestino != null &&
-                                                                          longitudeDestino != null)
-                                                                        fm.Marker(
-                                                                          rotate: true,
-                                                                          width: 60,
-                                                                          height: 60,
-                                                                          alignment: Alignment.topCenter,
-                                                                          point: fmlt.LatLng(latitudeDestino!, longitudeDestino!),
-                                                                          child: ClipOval(
-                                                                            child: Image.asset(
-                                                                              'assets/images/meta.png',
-                                                                              fit: BoxFit.contain,
-                                                                            ),
-                                                                          ),
-                                                                        ),
-                                                                      if (showLocationRide == true && showRequestsOverlay == false)
-                                                                        fm.Marker(
-                                                                          rotate: true,
-                                                                          width: media.width * 0.8,
-                                                                          height: media.height * 0.1,
-                                                                          alignment: Alignment.topCenter,
-                                                                          point: fmlt.LatLng(showRidesLatRecoger!, showRidesLonRecoger!),
-                                                                          child: Column(
-                                                                            children: [
-                                                                              Container(
-                                                                                padding: const EdgeInsets.all(5),
-                                                                                decoration: BoxDecoration(
-                                                                                  gradient: LinearGradient(
-                                                                                    colors: isDarkTheme
-                                                                                        ? [Color(0xff000000), Color(0xff808080)]
-                                                                                        : [Color(0xffFFFFFF), Color(0xffEFEFEF)],
-                                                                                    begin: Alignment.topCenter,
-                                                                                    end: Alignment.bottomCenter,
-                                                                                  ),
-                                                                                  borderRadius: BorderRadius.circular(5),
-                                                                                ),
-                                                                                child: Text(
-                                                                                  nombreUsuario ?? '',
-                                                                                  style: GoogleFonts.notoSans(
-                                                                                    color: textColor,
-                                                                                    fontSize: media.width *
-                                                                                        (platform == TargetPlatform.android ? ten : twelve),
-                                                                                  ),
-                                                                                ),
-                                                                              ),
-                                                                              const SizedBox(height: 10),
-                                                                              SizedBox(
-                                                                                width: media.width * 0.1,
-                                                                                height: media.width * 0.1,
-                                                                                child: ClipOval(
-                                                                                  child: Image.asset(
-                                                                                    themeProvider.isDarkTheme
-                                                                                        ? 'assets/gifs/icon-user2.gif'
-                                                                                        : 'assets/gifs/icon-user1.gif',
-                                                                                    fit: BoxFit.contain,
-                                                                                  ),
-                                                                                ),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                        ),
-                                                                      fm.Marker(
-                                                                        key: ValueKey('driver_marker_${themeProvider.isDarkTheme}'),
-                                                                        rotate: true,
-                                                                        alignment: Alignment.topCenter,
-                                                                        point: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
-                                                                        width: 80,
-                                                                        height: 80,
-                                                                        child: Image.asset(
-                                                                          themeProvider.isDarkTheme
-                                                                              ? 'assets/gifs/icon-driver2.gif'
-                                                                              : 'assets/gifs/icon-driver1.png',
-                                                                        ),
+                                                                ),
+                                                                if (driverReq['accepted_at'] != null &&
+                                                                    driverReq['is_driver_arrived'] != 1 &&
+                                                                    driverReq['is_trip_start'] != 1)
+                                                                  fm.PolylineLayer(
+                                                                    polylines: [
+                                                                      fm.Polyline(
+                                                                        points: routePoints,
+                                                                        color: trazoColor,
+                                                                        strokeWidth: 6,
                                                                       ),
                                                                     ],
                                                                   ),
-                                                                  const fm.RichAttributionWidget(attributions: []),
-                                                                ],
-                                                              );
-                                                            },
-                                                          ),
-                                                  ),
-                                                  Positioned(
-                                                    right:
-                                                        MediaQuery.of(context)
-                                                                .padding
-                                                                .right +
-                                                            20,
-                                                    top: MediaQuery.of(context)
-                                                            .padding
-                                                            .top +
-                                                        10,
-                                                    child: Column(
-                                                      children: [
-                                                        ToggleThemeWidget(
-                                                            themeProvider:
-                                                                themeProvider),
-                                                        const SizedBox(
-                                                          height: 10,
+                                                                if (endPoint != null &&
+                                                                    driverReq['accepted_at'] != null &&
+                                                                    driverReq['is_trip_start'] != 1)
+                                                                  fm.MarkerLayer(
+                                                                    markers: [
+                                                                      fm.Marker(
+                                                                        rotate: true,
+                                                                        width: 60,
+                                                                        height: 60,
+                                                                        point: endPoint!,
+                                                                        child: ClipOval(
+                                                                          child: Image.asset(
+                                                                            themeProvider.isDarkTheme
+                                                                                ? 'assets/gifs/icon-user2.gif'
+                                                                                : 'assets/gifs/icon-user1.gif',
+                                                                            fit: BoxFit.contain,
+                                                                          ),
+                                                                        ),
+                                                                      )
+                                                                    ],
+                                                                  ),
+                                                                if (routePoints.isNotEmpty && mostrarRutaDobleTap == true)
+                                                                  fm.PolylineLayer(
+                                                                    polylines: [
+                                                                      fm.Polyline(
+                                                                        points: routePoints,
+                                                                        strokeWidth: 4.0,
+                                                                        color: newRedColor,
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                if (dropProvider.routePointsDestino.isNotEmpty &&
+                                                                    dropProvider.mostrardDibujadoDestino == true)
+                                                                  fm.PolylineLayer(
+                                                                    polylines: [
+                                                                      fm.Polyline(
+                                                                        points: dropProvider.routePointsDestino,
+                                                                        strokeWidth: 4.0,
+                                                                        color: Colors.green,
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                fm.MarkerLayer(
+                                                                  markers: [
+                                                                    if (dropProvider.mostrardDibujadoDestino == true &&
+                                                                        showRequestsOverlay == false &&
+                                                                        latitudeDestino != null &&
+                                                                        longitudeDestino != null)
+                                                                      fm.Marker(
+                                                                        rotate: true,
+                                                                        width: 60,
+                                                                        height: 60,
+                                                                        alignment: Alignment.topCenter,
+                                                                        point: fmlt.LatLng(latitudeDestino!, longitudeDestino!),
+                                                                        child: ClipOval(
+                                                                          child: Image.asset(
+                                                                            'assets/images/meta.png',
+                                                                            fit: BoxFit.contain,
+                                                                          ),
+                                                                        ),
+                                                                      ),
+                                                                    // if (showLocationRide == true && showRequestsOverlay == false)
+                                                                    if (driverReq['accepted_at'] != null && driverReq['is_driver_arrived'] != 1)
+                                                                      fm.Marker(
+                                                                        rotate: true,
+                                                                        width: media.width * 0.8,
+                                                                        height: media.height * 0.1,
+                                                                        alignment: Alignment.topCenter,
+                                                                        point: fmlt.LatLng(driverReq['pick_lat'], driverReq['pick_lng']),
+                                                                        child: Column(
+                                                                          children: [
+                                                                            Container(
+                                                                              padding: const EdgeInsets.all(5),
+                                                                              decoration: BoxDecoration(
+                                                                                gradient: LinearGradient(
+                                                                                  colors: isDarkTheme
+                                                                                      ? [Color(0xff000000), Color(0xff808080)]
+                                                                                      : [Color(0xffFFFFFF), Color(0xffEFEFEF)],
+                                                                                  begin: Alignment.topCenter,
+                                                                                  end: Alignment.bottomCenter,
+                                                                                ),
+                                                                                borderRadius: BorderRadius.circular(5),
+                                                                              ),
+                                                                              child: Text(
+                                                                                nombreUsuario ?? '',
+                                                                                style: GoogleFonts.notoSans(
+                                                                                  color: textColor,
+                                                                                  fontSize: media.width *
+                                                                                      (platform == TargetPlatform.android ? ten : twelve),
+                                                                                ),
+                                                                              ),
+                                                                            ),
+                                                                            const SizedBox(height: 10),
+                                                                            SizedBox(
+                                                                              width: media.width * 0.1,
+                                                                              height: media.width * 0.1,
+                                                                              child: ClipOval(
+                                                                                child: Image.asset(
+                                                                                  themeProvider.isDarkTheme
+                                                                                      ? 'assets/gifs/icon-user2.gif'
+                                                                                      : 'assets/gifs/icon-user1.gif',
+                                                                                  fit: BoxFit.contain,
+                                                                                ),
+                                                                              ),
+                                                                            ),
+                                                                          ],
+                                                                        ),
+                                                                      ),
+                                                                    fm.Marker(
+                                                                      key: ValueKey('driver_marker_${themeProvider.isDarkTheme}'),
+                                                                      rotate: true,
+                                                                      alignment: Alignment.topCenter,
+                                                                      point: currentPositionNew ?? const fmlt.LatLng(-21.5355, -64.7296),
+                                                                      width: 80,
+                                                                      height: 80,
+                                                                      child: Image.asset(
+                                                                        themeProvider.isDarkTheme
+                                                                            ? 'assets/gifs/icon-driver2.gif'
+                                                                            : 'assets/gifs/icon-driver1.png',
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                                const fm.RichAttributionWidget(attributions: []),
+                                                              ],
+                                                            );
+                                                          },
                                                         ),
-
-                                                        //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DEL DESTINO
-                                                        (driverReq['accepted_at'] ==
-                                                                null)
-                                                            ? Container()
-                                                            : latitudeDestino ==
-                                                                        null ||
-                                                                    latitudeDestino ==
-                                                                        0.0
-                                                                ? Container()
-                                                                : OpenMapApp(
-                                                                    acceptDriverBottomSheetOffset:
-                                                                        acceptDriverBottomSheetOffset,
-                                                                    media:
-                                                                        media),
-                                                        //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DE LA RECOGIDA
-                                                        (driverReq['accepted_at'] ==
-                                                                null)
-                                                            ? Container()
-                                                            : PickUpOpenMap(
-                                                                acceptDriverBottomSheetOffset:
-                                                                    acceptDriverBottomSheetOffset,
-                                                                media: media),
-                                                        const SizedBox(
-                                                          height: 10,
-                                                        ),
-                                                        (driverReq['accepted_at'] ==
-                                                                null)
-                                                            ? Container()
-                                                            : latRecoger == null
-                                                                ? Container()
-                                                                : CenterDestination(
-                                                                    acceptDriverBottomSheetOffset:
-                                                                        acceptDriverBottomSheetOffset,
-                                                                    media:
-                                                                        media,
-                                                                    onTap:
-                                                                        () async {
-                                                                      _onCameraMoveStarted();
-                                                                      if (locationAllowed ==
-                                                                          true) {
-                                                                        if (mapType ==
-                                                                            'google') {
+                                                ),
+                                                Positioned(
+                                                  right:
+                                                      MediaQuery.of(context)
+                                                              .padding
+                                                              .right +
+                                                          20,
+                                                  top: MediaQuery.of(context)
+                                                          .padding
+                                                          .top +
+                                                      10,
+                                                  child: Column(
+                                                    children: [
+                                                      ToggleThemeWidget(
+                                                          themeProvider:
+                                                              themeProvider),
+                                                      const SizedBox(
+                                                        height: 10,
+                                                      ),
+                    
+                                                      //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DEL DESTINO
+                                                      (driverReq['accepted_at'] ==
+                                                              null)
+                                                          ? Container()
+                                                          : latitudeDestino ==
+                                                                      null ||
+                                                                  latitudeDestino ==
+                                                                      0.0
+                                                              ? Container()
+                                                              : OpenMapApp(
+                                                                  acceptDriverBottomSheetOffset:
+                                                                      acceptDriverBottomSheetOffset,
+                                                                  media:
+                                                                      media),
+                                                      //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DE LA RECOGIDA
+                                                      (driverReq['accepted_at'] ==
+                                                              null)
+                                                          ? Container()
+                                                          : PickUpOpenMap(
+                                                              acceptDriverBottomSheetOffset:
+                                                                  acceptDriverBottomSheetOffset,
+                                                              media: media),
+                                                      const SizedBox(
+                                                        height: 10,
+                                                      ),
+                                                      (driverReq['accepted_at'] ==
+                                                              null)
+                                                          ? Container()
+                                                          : latRecoger == null
+                                                              ? Container()
+                                                              : CenterDestination(
+                                                                  acceptDriverBottomSheetOffset:
+                                                                      acceptDriverBottomSheetOffset,
+                                                                  media:
+                                                                      media,
+                                                                  onTap: () async {
+                                                                    _onCameraMoveStarted();
+                                                                    if (locationAllowed == true) {
+                                                                      if (driverReq.isNotEmpty && driverReq['pick_lat'] != null && driverReq['pick_lng'] != null) {
+                                                                        final pickupLocation = fmlt.LatLng(driverReq['pick_lat'], driverReq['pick_lng']);
+                                                                        if (mapType == 'google') {
                                                                           _controller?.animateCamera(CameraUpdate.newLatLngZoom(
-                                                                              centerPosition!,
-                                                                              22.0));
+                                                                              LatLng(pickupLocation.latitude, pickupLocation.longitude), 22.0));
                                                                         } else {
-                                                                          // TODO: FM GPS Controller
-                                                                          _fmController.move(
-                                                                              fmlt.LatLng(latRecoger!, lonRecoger!),
-                                                                              _fmController.camera.zoom);
+                                                                          _fmController.move(pickupLocation, _fmController.camera.zoom);
                                                                         }
+                                                                      }
+                                                                    } else {
+                                                                      if (serviceEnabled == true) {
+                                                                        setState(() {
+                                                                          _locationDenied = true;
+                                                                        });
                                                                       } else {
-                                                                        if (serviceEnabled ==
-                                                                            true) {
-                                                                          setState(
-                                                                              () {
-                                                                            _locationDenied =
-                                                                                true;
+                                                                        await geolocator.Geolocator.getCurrentPosition(
+                                                                            desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
+                    
+                                                                        setState(() {
+                                                                          _isLoading = true;
+                                                                        });
+                    
+                                                                        await getLocsImproved();
+                    
+                                                                        
+                                                                        if (serviceEnabled == true) {
+                                                                          setState(() {
+                                                                            _locationDenied = true;
                                                                           });
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  },
+                                                                ),
+                                                      const SizedBox(
+                                                        height: 10,
+                                                      ),
+                                                      //*ESTE BOTON TIENE QUE centrar  al ususario
+                                                      (driverReq['accepted_at'] ==
+                                                              null)
+                                                          ? Container()
+                                                          : ValueListenableBuilder(
+                                                              valueListenable:
+                                                                  acceptDriverBottomSheetOffset,
+                                                              builder:
+                                                                  (context,
+                                                                      offset,
+                                                                      child) {
+                                                                double
+                                                                    bottomPadding =
+                                                                    915 *
+                                                                        (offset);
+                                                                return Container(
+                                                                  decoration: BoxDecoration(
+                                                                      boxShadow: [
+                                                                        BoxShadow(
+                                                                            blurRadius: 2,
+                                                                            color: Colors.black.withOpacity(0.2),
+                                                                            spreadRadius: 2)
+                                                                      ],
+                                                                      color:
+                                                                          page,
+                                                                      borderRadius:
+                                                                          BorderRadius.circular(media.width *
+                                                                              0.02)),
+                                                                  child:
+                                                                      Material(
+                                                                    color: Colors
+                                                                        .transparent,
+                                                                    child:
+                                                                        InkWell(
+                                                                      onTap:
+                                                                          () async {
+                                                                        _onFollowLocationPressed();
+                                                                        if (locationAllowed == true) {
+                                                                          if (mapType == 'google') {
+                                                                            _controller?.animateCamera(CameraUpdate.newLatLngZoom(centerPosition!, 18.0));
+                                                                          } else {
+                                                                            // TODO: FM GPS Controller
+                                                                            // print('TODO FM Current LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
+                                                                            _fmController.move(fmlt.LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude), _fmController.camera.zoom);
+                                                                          }
                                                                         } else {
-                                                                          await geolocator.Geolocator.getCurrentPosition(
-                                                                              desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
-
-                                                                          setState(
-                                                                              () {
-                                                                            _isLoading =
-                                                                                true;
-                                                                          });
-
-                                                                          /**
-                                                                           * FIXME: DEpreciatione
-                                                                           */
-                                                                          // await getLocs();
-                                                                          await getLocsImproved();
-
-                                                                          
-                                                                          if (serviceEnabled ==
-                                                                              true) {
+                                                                          if (serviceEnabled == true) {
                                                                             setState(() {
                                                                               _locationDenied = true;
                                                                             });
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                    },
-                                                                  ),
-                                                        const SizedBox(
-                                                          height: 10,
-                                                        ),
-                                                        //*ESTE BOTON TIENE QUE centrar  al ususario
-                                                        (driverReq['accepted_at'] ==
-                                                                null)
-                                                            ? Container()
-                                                            : ValueListenableBuilder(
-                                                                valueListenable:
-                                                                    acceptDriverBottomSheetOffset,
-                                                                builder:
-                                                                    (context,
-                                                                        offset,
-                                                                        child) {
-                                                                  double
-                                                                      bottomPadding =
-                                                                      915 *
-                                                                          (offset);
-                                                                  return Container(
-                                                                    decoration: BoxDecoration(
-                                                                        boxShadow: [
-                                                                          BoxShadow(
-                                                                              blurRadius: 2,
-                                                                              color: Colors.black.withOpacity(0.2),
-                                                                              spreadRadius: 2)
-                                                                        ],
-                                                                        color:
-                                                                            page,
-                                                                        borderRadius:
-                                                                            BorderRadius.circular(media.width *
-                                                                                0.02)),
-                                                                    child:
-                                                                        Material(
-                                                                      color: Colors
-                                                                          .transparent,
-                                                                      child:
-                                                                          InkWell(
-                                                                        onTap:
-                                                                            () async {
-                                                                          _onFollowLocationPressed();
-                                                                          if (locationAllowed == true) {
-                                                                            if (mapType == 'google') {
-                                                                              _controller?.animateCamera(CameraUpdate.newLatLngZoom(centerPosition!, 18.0));
-                                                                            } else {
-                                                                              // TODO: FM GPS Controller
-                                                                              // print('TODO FM Current LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
-                                                                              _fmController.move(fmlt.LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude), _fmController.camera.zoom);
-                                                                            }
                                                                           } else {
+                                                                            await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
+                                                                            setState(() {
+                                                                              _isLoading = true;
+                                                                            });
+                                                                            /**
+                                                                             * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
+                                                                             */
+                                                                            // await getLocs();
+                                                                            await getLocsImproved();
+                    
                                                                             if (serviceEnabled == true) {
                                                                               setState(() {
                                                                                 _locationDenied = true;
                                                                               });
-                                                                            } else {
-                                                                              await geolocator.Geolocator.getCurrentPosition(desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation);
-                                                                              setState(() {
-                                                                                _isLoading = true;
-                                                                              });
-                                                                              /**
-                                                                               * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
-                                                                               */
-                                                                              // await getLocs();
-                                                                              await getLocsImproved();
-
-                                                                              if (serviceEnabled == true) {
-                                                                                setState(() {
-                                                                                  _locationDenied = true;
-                                                                                });
-                                                                              }
                                                                             }
                                                                           }
-                                                                        },
+                                                                        }
+                                                                      },
+                                                                      child:
+                                                                          SizedBox(
+                                                                        height:
+                                                                            media.width * 0.1,
+                                                                        width:
+                                                                            media.width * 0.1,
+                    
+                                                                        // alignment:
+                                                                        //     Alignment.center,
                                                                         child:
-                                                                            SizedBox(
-                                                                          height:
-                                                                              media.width * 0.1,
-                                                                          width:
-                                                                              media.width * 0.1,
-
-                                                                          // alignment:
-                                                                          //     Alignment.center,
-                                                                          child:
-                                                                              Icon(
-                                                                            Icons.my_location_sharp,
-                                                                            color:
-                                                                                newRedColor,
-                                                                            size:
-                                                                                media.width * 0.068,
-                                                                          ),
+                                                                            Icon(
+                                                                          Icons.my_location_sharp,
+                                                                          color:
+                                                                              newRedColor,
+                                                                          size:
+                                                                              media.width * 0.068,
                                                                         ),
                                                                       ),
                                                                     ),
-                                                                  );
-                                                                }),
-                                                         const SizedBox(
-                                                          height: 10,
-                                                        ),
-                                                       
-                                                      ],
-                                                    ),
+                                                                  ),
+                                                                );
+                                                              }),
+                                                       const SizedBox(
+                                                        height: 10,
+                                                      ),
+                                                     
+                                                    ],
                                                   ),
-
-                                                  //driver status
-                                                  Positioned(
-                                                    top: MediaQuery.of(context)
-                                                            .padding
-                                                            .top +
-                                                        20,
-                                                    child: InkWell(
-                                                      onTap: () async {
-                                                        // print('BTN De Servio');
-                                                        /**
-                                                         * TODO: FM BTN De Servicio / Fuera de Servicio
-                                                         */
-                                                        if (driverReq['accepted_at'] == null) {
-                                                          // Si las condiciones de ubicación están permitidas y el servicio está habilitado
-                                                          if (locationAllowed == true && serviceEnabled == true) {
-                                                            SharedPreferences prefs = await SharedPreferences.getInstance();
+                                                ),
+                    
+                                                //driver status
+                                                Positioned(
+                                                  top: MediaQuery.of(context)
+                                                          .padding
+                                                          .top +
+                                                      20,
+                                                  child: InkWell(
+                                                    onTap: () async {
+                                                      // print('BTN De Servio');
+                                                      /**
+                                                       * TODO: FM BTN De Servicio / Fuera de Servicio
+                                                       */
+                                                      if (driverReq['accepted_at'] == null) {
+                                                        // Si las condiciones de ubicación están permitidas y el servicio está habilitado
+                                                        if (locationAllowed == true && serviceEnabled == true) {
+                                                          SharedPreferences prefs = await SharedPreferences.getInstance();
+                                                          setState(() {
+                                                            _isLoading = true;
+                                                          });
+                    
+                                                          var val = await driverStatus();
+                                                          if (val == true) {
+                                                            if (userDetails['active'] == true) {
+                                                              /**
+                                                               * FIXME: FM - Reactivando servicio
+                                                               */
+                                                              FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": true });
+                                                              SharedPreferences prefs = await SharedPreferences.getInstance();
+                                                              await prefs.setBool('estaActivo', true);
+                                                              await verificarDeudas();
+                                                              await _initializeLocationImproved(opcion: 2);
+                                                            } else {
+                                                              /**
+                                                               * FIXME: FM - Deteniendo servicio
+                                                               */
+                                                              await prefs.setBool('estaActivo', false);
+                                                              if (userDetails[ 'active'] == false) {
+                                                                await detenerUbicacion();
+                                                                // Detén otros recursos aquí
+                                                              }
+                                                            }
+                                                          }
+                                                          if (val == 'logout') {
+                                                            navigateLogout();
+                                                          }
+                                                          setState(() {
+                                                            _isLoading = false;
+                                                          });
+                                                        } else if (locationAllowed == true && serviceEnabled == false) {
+                                                          // Pedir ubicación si no está habilitada
+                                                          await geolocator.Geolocator.getCurrentPosition(
+                                                            desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
+                                                          );
+                                                          if (await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled()) {
+                                                            serviceEnabled = true;
                                                             setState(() {
                                                               _isLoading = true;
                                                             });
-
+                    
+                                                            // Llama a verificarDeudas aquí también
+                                                            await verificarDeudas();
+                    
                                                             var val = await driverStatus();
-                                                            if (val == true) {
-                                                              if (userDetails['active'] == true) {
-                                                                /**
-                                                                 * FIXME: FM - Reactivando servicio
-                                                                 */
-                                                                FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": true });
-                                                                SharedPreferences prefs = await SharedPreferences.getInstance();
-                                                                await prefs.setBool('estaActivo', true);
-                                                                await verificarDeudas();
-                                                                await _initializeLocationImproved(opcion: 2);
-                                                              } else {
-                                                                /**
-                                                                 * FIXME: FM - Deteniendo servicio
-                                                                 */
-                                                                await prefs.setBool('estaActivo', false);
-                                                                if (userDetails[ 'active'] == false) {
-                                                                  await detenerUbicacion();
-                                                                  // Detén otros recursos aquí
-                                                                }
-                                                              }
-                                                            }
                                                             if (val == 'logout') {
                                                               navigateLogout();
                                                             }
                                                             setState(() {
                                                               _isLoading = false;
                                                             });
-                                                          } else if (locationAllowed == true && serviceEnabled == false) {
-                                                            // Pedir ubicación si no está habilitada
+                                                          }
+                                                        } else {
+                                                          // Caso en que el servicio está habilitado
+                                                          if (serviceEnabled == true) {
+                                                            setState(() {
+                                                              makeOnline = true;
+                                                              _locationDenied = true;
+                                                            });
+                                                          } else {
+                                                            // Intentar obtener la posición si el servicio no está habilitado
                                                             await geolocator.Geolocator.getCurrentPosition(
                                                               desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
                                                             );
-                                                            if (await geolocator.GeolocatorPlatform.instance.isLocationServiceEnabled()) {
-                                                              serviceEnabled = true;
-                                                              setState(() {
-                                                                _isLoading = true;
-                                                              });
-
-                                                              // Llama a verificarDeudas aquí también
-                                                              await verificarDeudas();
-
-                                                              var val = await driverStatus();
-                                                              if (val == 'logout') {
-                                                                navigateLogout();
-                                                              }
-                                                              setState(() {
-                                                                _isLoading = false;
-                                                              });
-                                                            }
-                                                          } else {
-                                                            // Caso en que el servicio está habilitado
+                    
+                                                            setState(() {
+                                                              _isLoading = true;
+                                                            });
+                                                            /**
+                                                             * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
+                                                             */
+                                                            // await getLocs();
+                                                            await getLocsImproved();
+                    
                                                             if (serviceEnabled == true) {
                                                               setState(() {
                                                                 makeOnline = true;
                                                                 _locationDenied = true;
                                                               });
-                                                            } else {
-                                                              // Intentar obtener la posición si el servicio no está habilitado
-                                                              await geolocator.Geolocator.getCurrentPosition(
-                                                                desiredAccuracy: geolocator.LocationAccuracy.bestForNavigation,
-                                                              );
-
-                                                              setState(() {
-                                                                _isLoading = true;
-                                                              });
-                                                              /**
-                                                               * FIXME: FM getLocs() is not defined in this context, ensure you have the correct function to get locations
-                                                               */
-                                                              // await getLocs();
-                                                              await getLocsImproved();
-
-                                                              if (serviceEnabled == true) {
-                                                                setState(() {
-                                                                  makeOnline = true;
-                                                                  _locationDenied = true;
-                                                                });
-                                                              }
                                                             }
                                                           }
                                                         }
-                                                      },
-                                                      child:
-                                                          OnlineOfflineWidget(
-                                                              media: media),
-                                                    ),
+                                                      }
+                                                    },
+                                                    child:
+                                                        OnlineOfflineWidget(
+                                                            media: media),
                                                   ),
-
-                                                  //menu bar -
-                                                  Positioned(
-                                                    top: MediaQuery.of(context)
-                                                            .padding
-                                                            .top +
-                                                        12.5,
-                                                    child: SizedBox(
-                                                      width: media.width * 0.9,
-                                                      child: Row(
-                                                        mainAxisAlignment:
-                                                            MainAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          Container(
-                                                            height:
-                                                                media.width *
-                                                                    0.1,
-                                                            width: media.width *
-                                                                0.1,
-                                                            decoration:
-                                                                BoxDecoration(
-                                                              boxShadow: [
-                                                                BoxShadow(
-                                                                    blurRadius:
-                                                                        2,
-                                                                    color: textColor
-                                                                        .withOpacity(
-                                                                            0.2),
-                                                                    spreadRadius:
-                                                                        2)
-                                                              ],
-                                                              color: page,
-                                                              borderRadius: BorderRadius
-                                                                  .circular(media
-                                                                          .width *
-                                                                      0.025),
-                                                            ),
-                                                            child: StatefulBuilder(
-                                                                builder: (context,
-                                                                    setState) {
-                                                              return InkWell(
-                                                                  onTap:
-                                                                      () async {
-                                                                    if ((userDetails['role'] !=
-                                                                            'owner' &&
-                                                                        userDetails['enable_bidding'] ==
-                                                                            true)) {
-                                                                      // Scaffold.of(context).openDrawer();
-                                                                      addressList
-                                                                          .clear();
-                                                                      tripStops
-                                                                          .clear();
-                                                                      Navigator.pop(
-                                                                          context);
-                                                                    } else {
-                                                                      // Navigator.pop(context);
-                                                                      Scaffold.of(
-                                                                              context)
-                                                                          .openDrawer();
-                                                                    }
-                                                                  },
-                                                                  child: Icon(
-                                                                      (userDetails['role'] != 'owner' &&
-                                                                              userDetails['enable_bidding'] ==
-                                                                                  true)
-                                                                          ? Icons
-                                                                              .arrow_back
-                                                                          : Icons
-                                                                              .menu,
-                                                                      size: media
-                                                                              .width *
-                                                                          0.08,
-                                                                      color:
-                                                                          newRedColor));
-                                                            }),
+                                                ),
+                    
+                                                //menu bar -
+                                                Positioned(
+                                                  top: MediaQuery.of(context)
+                                                          .padding
+                                                          .top +
+                                                      12.5,
+                                                  child: SizedBox(
+                                                    width: media.width * 0.9,
+                                                    child: Row(
+                                                      mainAxisAlignment:
+                                                          MainAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Container(
+                                                          height:
+                                                              media.width *
+                                                                  0.1,
+                                                          width: media.width *
+                                                              0.1,
+                                                          decoration:
+                                                              BoxDecoration(
+                                                            boxShadow: [
+                                                              BoxShadow(
+                                                                  blurRadius:
+                                                                      2,
+                                                                  color: textColor
+                                                                      .withOpacity(
+                                                                          0.2),
+                                                                  spreadRadius:
+                                                                      2)
+                                                            ],
+                                                            color: page,
+                                                            borderRadius: BorderRadius
+                                                                .circular(media
+                                                                        .width *
+                                                                    0.025),
                                                           ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ),
-
-                                                  //online or offline button
-                                                  (userDetails['role'] !=
-                                                          'owner')
-                                                      ? Container()
-                                                      : (languageDirection ==
-                                                              'rtl')
-                                                          ? Positioned(
-                                                              top: MediaQuery.of(
-                                                                          context)
-                                                                      .padding
-                                                                      .top +
-                                                                  12.5,
-                                                              left: 10,
-                                                              child:
-                                                                  AnimatedContainer(
-                                                                curve: Curves
-                                                                    .fastLinearToSlowEaseIn,
-                                                                duration:
-                                                                    const Duration(
-                                                                        milliseconds:
-                                                                            0),
-                                                                height: media
-                                                                        .width *
-                                                                    0.13,
-                                                                width: (show == true)
-                                                                    ? media.width *
-                                                                        0.13
-                                                                    : media.width *
-                                                                        0.7,
-                                                                decoration:
-                                                                    BoxDecoration(
-                                                                  borderRadius: show ==
-                                                                          true
-                                                                      ? BorderRadius.circular(
-                                                                          100.0)
-                                                                      : const BorderRadius
-                                                                          .only(
-                                                                          topLeft: Radius.circular(
-                                                                              100),
-                                                                          bottomLeft: Radius.circular(
-                                                                              100),
-                                                                          topRight: Radius.circular(
-                                                                              20),
-                                                                          bottomRight:
-                                                                              Radius.circular(20)),
-                                                                  color: Colors
-                                                                      .white,
-                                                                  boxShadow: const [
-                                                                    BoxShadow(
-                                                                      color: ui
-                                                                              .Color
-                                                                          .fromARGB(
-                                                                              255,
-                                                                              8,
-                                                                              38,
-                                                                              172),
-                                                                      offset: Offset(
-                                                                          0.0,
-                                                                          1.0), //(x,y)
-                                                                      blurRadius:
-                                                                          10.0,
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                                child: Row(
-                                                                  mainAxisAlignment:
-                                                                      MainAxisAlignment
-                                                                          .spaceBetween,
-                                                                  children: [
-                                                                    show == false
-                                                                        ? SizedBox(
-                                                                            width:
-                                                                                media.width * 0.57,
-                                                                            child:
-                                                                                Row(
-                                                                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                                                              children: [
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.green,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/available.png' : 'assets/images/available_delivery.png',
-                                                                                  text: languages[choosenLanguage]['text_available'],
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 3;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.red,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/onboard.png' : 'assets/images/onboard_delivery.png',
-                                                                                  text: languages[choosenLanguage]['text_onboard'],
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 2;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.grey,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/offlinecar.png' : 'assets/images/offlinecar_delivery.png',
-                                                                                  text: languages[choosenLanguage]['text_offline'],
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 1;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                              ],
-                                                                            ),
-                                                                          )
-                                                                        : Container(),
-                                                                    InkWell(
-                                                                      onTap:
-                                                                          () {
-                                                                        setState(
-                                                                            () {
-                                                                          filtericon =
-                                                                              0;
-                                                                          myMarkers
-                                                                              .clear();
-                                                                          if (show ==
-                                                                              false) {
-                                                                            show =
-                                                                                true;
-                                                                          } else {
-                                                                            show =
-                                                                                false;
-                                                                          }
-                                                                        });
-                                                                      },
-                                                                      child:
-                                                                          Container(
-                                                                        width: media.width *
-                                                                            0.13,
-                                                                        decoration: BoxDecoration(
-                                                                            image:
-                                                                                DecorationImage(image: (transportType == 'taxi' || transportType == 'both') ? const AssetImage('assets/images/bluecar.png') : const AssetImage('assets/images/bluecar_delivery.png'), fit: BoxFit.contain),
-                                                                            borderRadius: BorderRadius.circular(100.0)),
-                                                                      ),
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                              ),
-                                                            )
-                                                          : Positioned(
-                                                              top: MediaQuery.of(
-                                                                          context)
-                                                                      .padding
-                                                                      .top +
-                                                                  12.5,
-                                                              right: 10,
-                                                              child:
-                                                                  AnimatedContainer(
-                                                                curve: Curves
-                                                                    .fastLinearToSlowEaseIn,
-                                                                duration:
-                                                                    const Duration(
-                                                                        milliseconds:
-                                                                            0),
-                                                                height: media
-                                                                        .width *
-                                                                    0.13,
-                                                                width: (show == true)
-                                                                    ? media.width *
-                                                                        0.13
-                                                                    : media.width *
-                                                                        0.7,
-                                                                decoration:
-                                                                    BoxDecoration(
-                                                                  borderRadius: show ==
-                                                                          true
-                                                                      ? BorderRadius.circular(
-                                                                          100.0)
-                                                                      : const BorderRadius
-                                                                          .only(
-                                                                          topLeft: Radius.circular(
-                                                                              20),
-                                                                          bottomLeft: Radius.circular(
-                                                                              20),
-                                                                          topRight: Radius.circular(
-                                                                              100),
-                                                                          bottomRight:
-                                                                              Radius.circular(100)),
-                                                                  color: Colors
-                                                                      .white,
-                                                                  boxShadow: const [
-                                                                    BoxShadow(
-                                                                      color: ui
-                                                                              .Color
-                                                                          .fromARGB(
-                                                                              255,
-                                                                              8,
-                                                                              38,
-                                                                              172),
-                                                                      offset: Offset(
-                                                                          0.0,
-                                                                          1.0), //(x,y)
-                                                                      blurRadius:
-                                                                          10.0,
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                                child: Row(
-                                                                  mainAxisAlignment:
-                                                                      MainAxisAlignment
-                                                                          .spaceBetween,
-                                                                  children: [
-                                                                    show == false
-                                                                        ? SizedBox(
-                                                                            width:
-                                                                                media.width * 0.57,
-                                                                            child:
-                                                                                Row(
-                                                                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                                                              children: [
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.green,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/available.png' : 'assets/images/available_delivery.png',
-                                                                                  text: languages[choosenLanguage]['text_available'],
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 3;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.red,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/onboard.png' : 'assets/images/onboard_delivery.png',
-                                                                                  text: languages[choosenLanguage]['text_onboard'],
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 2;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                                OwnerCarImagecontainer(
-                                                                                  color: Colors.grey,
-                                                                                  imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/offlinecar.png' : 'assets/images/offlinecar_delivery.png',
-                                                                                  text: 'Offline',
-                                                                                  ontap: () {
-                                                                                    setState(() {
-                                                                                      filtericon = 1;
-                                                                                      myMarkers.clear();
-                                                                                    });
-                                                                                  },
-                                                                                ),
-                                                                              ],
-                                                                            ),
-                                                                          )
-                                                                        : Container(),
-                                                                    InkWell(
-                                                                      onTap:
-                                                                          () {
-                                                                        setState(
-                                                                            () {
-                                                                          filtericon =
-                                                                              0;
-                                                                          myMarkers
-                                                                              .clear();
-                                                                          if (show ==
-                                                                              false) {
-                                                                            show =
-                                                                                true;
-                                                                          } else {
-                                                                            show =
-                                                                                false;
-                                                                          }
-                                                                        });
-                                                                      },
-                                                                      child:
-                                                                          Container(
-                                                                        width: media.width *
-                                                                            0.13,
-                                                                        decoration: BoxDecoration(
-                                                                            image:
-                                                                                DecorationImage(image: (transportType == 'taxi' || transportType == 'both') ? const AssetImage('assets/images/bluecar.png') : const AssetImage('assets/images/bluecar_delivery.png'), fit: BoxFit.contain),
-                                                                            borderRadius: BorderRadius.circular(100.0)),
-                                                                      ),
-                                                                    ),
-                                                                  ],
-                                                                ),
-                                                              ),
-                                                            ),
-
-                                                  (driverReq.isEmpty &&
-                                                          userDetails['role'] !=
-                                                              'owner' &&
-                                                          userDetails['transport_type'] !=
-                                                              'delivery' &&
-                                                          userDetails[
-                                                                  'active'] ==
-                                                              true &&
-                                                          userDetails['show_instant_ride_feature_on_mobile_app'] ==
-                                                              '1')
-                                                      ? Positioned(
-                                                          bottom: media.width *
-                                                              0.05,
-                                                          left: media.width *
-                                                              0.05,
-                                                          right: media.width *
-                                                              0.05,
-                                                          child: Row(
-                                                            children: [
-                                                              InkWell(
+                                                          child: StatefulBuilder(
+                                                              builder: (context,
+                                                                  setState) {
+                                                            return InkWell(
                                                                 onTap:
                                                                     () async {
-                                                                  addressList
-                                                                      .clear();
-                                                                  var val = await geoCoding(
+                                                                  if ((userDetails['role'] !=
+                                                                          'owner' &&
+                                                                      userDetails['enable_bidding'] ==
+                                                                          true)) {
+                                                                    // Scaffold.of(context).openDrawer();
+                                                                    addressList
+                                                                        .clear();
+                                                                    tripStops
+                                                                        .clear();
+                                                                    Navigator.pop(
+                                                                        context);
+                                                                  } else {
+                                                                    // Navigator.pop(context);
+                                                                    Scaffold.of(
+                                                                            context)
+                                                                        .openDrawer();
+                                                                  }
+                                                                },
+                                                                child: Icon(
+                                                                    (userDetails['role'] != 'owner' &&
+                                                                            userDetails['enable_bidding'] ==
+                                                                                true)
+                                                                        ? Icons
+                                                                            .arrow_back
+                                                                        : Icons
+                                                                            .menu,
+                                                                    size: media
+                                                                            .width *
+                                                                        0.08,
+                                                                    color:
+                                                                        newRedColor));
+                                                          }),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ),
+                    
+                                                //online or offline button
+                                                (userDetails['role'] !=
+                                                        'owner')
+                                                    ? Container()
+                                                    : (languageDirection ==
+                                                            'rtl')
+                                                        ? Positioned(
+                                                            top: MediaQuery.of(
+                                                                        context)
+                                                                    .padding
+                                                                    .top +
+                                                                12.5,
+                                                            left: 10,
+                                                            child:
+                                                                AnimatedContainer(
+                                                              curve: Curves
+                                                                  .fastLinearToSlowEaseIn,
+                                                              duration:
+                                                                  const Duration(
+                                                                      milliseconds:
+                                                                          0),
+                                                              height: media
+                                                                      .width *
+                                                                  0.13,
+                                                              width: (show == true)
+                                                                  ? media.width *
+                                                                      0.13
+                                                                  : media.width *
+                                                                      0.7,
+                                                              decoration:
+                                                                  BoxDecoration(
+                                                                borderRadius: show ==
+                                                                        true
+                                                                    ? BorderRadius.circular(
+                                                                        100.0)
+                                                                    : const BorderRadius
+                                                                        .only(
+                                                                        topLeft: Radius.circular(
+                                                                            100),
+                                                                        bottomLeft: Radius.circular(
+                                                                            100),
+                                                                        topRight: Radius.circular(
+                                                                            20),
+                                                                        bottomRight:
+                                                                            Radius.circular(20)),
+                                                                color: Colors
+                                                                    .white,
+                                                                boxShadow: const [
+                                                                  BoxShadow(
+                                                                    color: ui
+                                                                            .Color
+                                                                        .fromARGB(
+                                                                            255,
+                                                                            8,
+                                                                            38,
+                                                                            172),
+                                                                    offset: Offset(
+                                                                        0.0,
+                                                                        1.0), //(x,y)
+                                                                    blurRadius:
+                                                                        10.0,
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                              child: Row(
+                                                                mainAxisAlignment:
+                                                                    MainAxisAlignment
+                                                                        .spaceBetween,
+                                                                children: [
+                                                                  show == false
+                                                                      ? SizedBox(
+                                                                          width:
+                                                                              media.width * 0.57,
+                                                                          child:
+                                                                              Row(
+                                                                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                                            children: [
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.green,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/available.png' : 'assets/images/available_delivery.png',
+                                                                                text: languages[choosenLanguage]['text_available'],
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 3;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.red,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/onboard.png' : 'assets/images/onboard_delivery.png',
+                                                                                text: languages[choosenLanguage]['text_onboard'],
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 2;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.grey,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/offlinecar.png' : 'assets/images/offlinecar_delivery.png',
+                                                                                text: languages[choosenLanguage]['text_offline'],
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 1;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        )
+                                                                      : Container(),
+                                                                  InkWell(
+                                                                    onTap:
+                                                                        () {
+                                                                      setState(
+                                                                          () {
+                                                                        filtericon =
+                                                                            0;
+                                                                        myMarkers
+                                                                            .clear();
+                                                                        if (show ==
+                                                                            false) {
+                                                                          show =
+                                                                              true;
+                                                                        } else {
+                                                                          show =
+                                                                              false;
+                                                                        }
+                                                                      });
+                                                                    },
+                                                                    child:
+                                                                        Container(
+                                                                      width: media.width *
+                                                                          0.13,
+                                                                      decoration: BoxDecoration(
+                                                                          image:
+                                                                              DecorationImage(image: (transportType == 'taxi' || transportType == 'both') ? const AssetImage('assets/images/bluecar.png') : const AssetImage('assets/images/bluecar_delivery.png'), fit: BoxFit.contain),
+                                                                          borderRadius: BorderRadius.circular(100.0)),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          )
+                                                        : Positioned(
+                                                            top: MediaQuery.of(
+                                                                        context)
+                                                                    .padding
+                                                                    .top +
+                                                                12.5,
+                                                            right: 10,
+                                                            child:
+                                                                AnimatedContainer(
+                                                              curve: Curves
+                                                                  .fastLinearToSlowEaseIn,
+                                                              duration:
+                                                                  const Duration(
+                                                                      milliseconds:
+                                                                          0),
+                                                              height: media
+                                                                      .width *
+                                                                  0.13,
+                                                              width: (show == true)
+                                                                  ? media.width *
+                                                                      0.13
+                                                                  : media.width *
+                                                                      0.7,
+                                                              decoration:
+                                                                  BoxDecoration(
+                                                                borderRadius: show ==
+                                                                        true
+                                                                    ? BorderRadius.circular(
+                                                                        100.0)
+                                                                    : const BorderRadius
+                                                                        .only(
+                                                                        topLeft: Radius.circular(
+                                                                            20),
+                                                                        bottomLeft: Radius.circular(
+                                                                            20),
+                                                                        topRight: Radius.circular(
+                                                                            100),
+                                                                        bottomRight:
+                                                                            Radius.circular(100)),
+                                                                color: Colors
+                                                                    .white,
+                                                                boxShadow: const [
+                                                                  BoxShadow(
+                                                                    color: ui
+                                                                            .Color
+                                                                        .fromARGB(
+                                                                            255,
+                                                                            8,
+                                                                            38,
+                                                                            172),
+                                                                    offset: Offset(
+                                                                        0.0,
+                                                                        1.0), //(x,y)
+                                                                    blurRadius:
+                                                                        10.0,
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                              child: Row(
+                                                                mainAxisAlignment:
+                                                                    MainAxisAlignment
+                                                                        .spaceBetween,
+                                                                children: [
+                                                                  show == false
+                                                                      ? SizedBox(
+                                                                          width:
+                                                                              media.width * 0.57,
+                                                                          child:
+                                                                              Row(
+                                                                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                                            children: [
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.green,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/available.png' : 'assets/images/available_delivery.png',
+                                                                                text: languages[choosenLanguage]['text_available'],
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 3;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.red,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/onboard.png' : 'assets/images/onboard_delivery.png',
+                                                                                text: languages[choosenLanguage]['text_onboard'],
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 2;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                              OwnerCarImagecontainer(
+                                                                                color: Colors.grey,
+                                                                                imgurl: (transportType == 'taxi' || transportType == 'both') ? 'assets/images/offlinecar.png' : 'assets/images/offlinecar_delivery.png',
+                                                                                text: 'Offline',
+                                                                                ontap: () {
+                                                                                  setState(() {
+                                                                                    filtericon = 1;
+                                                                                    myMarkers.clear();
+                                                                                  });
+                                                                                },
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        )
+                                                                      : Container(),
+                                                                  InkWell(
+                                                                    onTap:
+                                                                        () {
+                                                                      setState(
+                                                                          () {
+                                                                        filtericon =
+                                                                            0;
+                                                                        myMarkers
+                                                                            .clear();
+                                                                        if (show ==
+                                                                            false) {
+                                                                          show =
+                                                                              true;
+                                                                        } else {
+                                                                          show =
+                                                                              false;
+                                                                        }
+                                                                      });
+                                                                    },
+                                                                    child:
+                                                                        Container(
+                                                                      width: media.width *
+                                                                          0.13,
+                                                                      decoration: BoxDecoration(
+                                                                          image:
+                                                                              DecorationImage(image: (transportType == 'taxi' || transportType == 'both') ? const AssetImage('assets/images/bluecar.png') : const AssetImage('assets/images/bluecar_delivery.png'), fit: BoxFit.contain),
+                                                                          borderRadius: BorderRadius.circular(100.0)),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          ),
+                    
+                                                (driverReq.isEmpty &&
+                                                        userDetails['role'] !=
+                                                            'owner' &&
+                                                        userDetails['transport_type'] !=
+                                                            'delivery' &&
+                                                        userDetails[
+                                                                'active'] ==
+                                                            true &&
+                                                        userDetails['show_instant_ride_feature_on_mobile_app'] ==
+                                                            '1')
+                                                    ? Positioned(
+                                                        bottom: media.width *
+                                                            0.05,
+                                                        left: media.width *
+                                                            0.05,
+                                                        right: media.width *
+                                                            0.05,
+                                                        child: Row(
+                                                          children: [
+                                                            InkWell(
+                                                              onTap:
+                                                                  () async {
+                                                                addressList
+                                                                    .clear();
+                                                                var val = await geoCoding(
+                                                                    centerPosition!
+                                                                        .latitude,
+                                                                    centerPosition!
+                                                                        .longitude);
+                                                                setState(() {
+                                                                  if (addressList
+                                                                      .where((element) =>
+                                                                          element.type ==
+                                                                          'pickup')
+                                                                      .isNotEmpty) {
+                                                                    var add = addressList.firstWhere((element) =>
+                                                                        element
+                                                                            .type ==
+                                                                        'pickup');
+                                                                    add.address =
+                                                                        val;
+                                                                    add.latlng =
+                                                                        LatLng(
                                                                       centerPosition!
                                                                           .latitude,
                                                                       centerPosition!
-                                                                          .longitude);
-                                                                  setState(() {
-                                                                    if (addressList
-                                                                        .where((element) =>
-                                                                            element.type ==
-                                                                            'pickup')
-                                                                        .isNotEmpty) {
-                                                                      var add = addressList.firstWhere((element) =>
-                                                                          element
-                                                                              .type ==
-                                                                          'pickup');
-                                                                      add.address =
-                                                                          val;
-                                                                      add.latlng =
-                                                                          LatLng(
-                                                                        centerPosition!
-                                                                            .latitude,
-                                                                        centerPosition!
-                                                                            .longitude,
-                                                                      );
-                                                                    } else {
-                                                                      addressList
-                                                                          .add(
-                                                                        AddressList(
-                                                                          id: '1',
-                                                                          type:
-                                                                              'pickup',
-                                                                          address:
-                                                                              val,
-                                                                          latlng: LatLng(
-                                                                              centerPosition!.latitude,
-                                                                              centerPosition!.longitude),
-                                                                        ),
-                                                                      );
-                                                                    }
-                                                                  });
-                                                                  if (addressList
-                                                                      .isNotEmpty) {
-                                                                    // ignore: use_build_context_synchronously
-                                                                    Navigator.push(
-                                                                        // ignore: use_build_context_synchronously
-                                                                        context,
-                                                                        MaterialPageRoute(builder: (context) => const DropLocation()));
+                                                                          .longitude,
+                                                                    );
+                                                                  } else {
+                                                                    addressList
+                                                                        .add(
+                                                                      AddressList(
+                                                                        id: '1',
+                                                                        type:
+                                                                            'pickup',
+                                                                        address:
+                                                                            val,
+                                                                        latlng: LatLng(
+                                                                            centerPosition!.latitude,
+                                                                            centerPosition!.longitude),
+                                                                      ),
+                                                                    );
                                                                   }
-                                                                },
-                                                                child:
-                                                                    Container(
-                                                                  height: media
-                                                                          .width *
-                                                                      0.12,
-                                                                  padding: EdgeInsets
-                                                                      .all(media
-                                                                              .width *
-                                                                          0.03),
-                                                                  decoration:
-                                                                      BoxDecoration(
-                                                                    color: (isDarkTheme)
-                                                                        ? buttonColor
-                                                                        : Colors
-                                                                            .black,
-                                                                    borderRadius:
-                                                                        BorderRadius.circular(media.width *
-                                                                            0.02),
-                                                                  ),
-                                                                  child: MyText(
-                                                                    text: languages[
-                                                                            choosenLanguage]
-                                                                        [
-                                                                        'text_instant_ride'],
-                                                                    size: media
-                                                                            .width *
-                                                                        sixteen,
-                                                                    fontweight:
-                                                                        FontWeight
-                                                                            .w600,
-                                                                    color: (isDarkTheme)
-                                                                        ? Colors
-                                                                            .black
-                                                                        : page,
-                                                                  ),
-                                                                ),
-                                                              )
-                                                            ],
-                                                          ))
-                                                      : Container(),
-
-                                                  //request popup accept or reject
-
-                                                  //user cancelled request popup
-                                                  (_reqCancelled == true)
-                                                      ? Positioned(
-                                                          bottom: media.height *
-                                                              0.5,
-                                                          child: Container(
-                                                            padding: EdgeInsets
-                                                                .all(media
+                                                                });
+                                                                if (addressList
+                                                                    .isNotEmpty) {
+                                                                  // ignore: use_build_context_synchronously
+                                                                  Navigator.push(
+                                                                      // ignore: use_build_context_synchronously
+                                                                      context,
+                                                                      MaterialPageRoute(builder: (context) => const DropLocation()));
+                                                                }
+                                                              },
+                                                              child:
+                                                                  Container(
+                                                                height: media
                                                                         .width *
-                                                                    0.05),
-                                                            decoration: BoxDecoration(
-                                                                borderRadius:
-                                                                    BorderRadius
-                                                                        .circular(
-                                                                            10),
-                                                                color: page,
-                                                                boxShadow: [
-                                                                  BoxShadow(
-                                                                      color: Colors
+                                                                    0.12,
+                                                                padding: EdgeInsets
+                                                                    .all(media
+                                                                            .width *
+                                                                        0.03),
+                                                                decoration:
+                                                                    BoxDecoration(
+                                                                  color: (isDarkTheme)
+                                                                      ? buttonColor
+                                                                      : Colors
+                                                                          .black,
+                                                                  borderRadius:
+                                                                      BorderRadius.circular(media.width *
+                                                                          0.02),
+                                                                ),
+                                                                child: MyText(
+                                                                  text: languages[
+                                                                          choosenLanguage]
+                                                                      [
+                                                                      'text_instant_ride'],
+                                                                  size: media
+                                                                          .width *
+                                                                      sixteen,
+                                                                  fontweight:
+                                                                      FontWeight
+                                                                          .w600,
+                                                                  color: (isDarkTheme)
+                                                                      ? Colors
                                                                           .black
-                                                                          .withOpacity(
-                                                                              0.2),
-                                                                      blurRadius:
-                                                                          2,
-                                                                      spreadRadius:
-                                                                          2)
-                                                                ]),
-                                                            child: Text(languages[
-                                                                    choosenLanguage]
-                                                                [
-                                                                'text_user_cancelled_request']),
-                                                          ))
-                                                      : Container(),
-
-                                                  /**
-                                                   * FIXME: FM - BTN Mi Ubicacion
-                                                   */
-                                                  //*Boton de posicionamiento
-                                                  (driverReq['accepted_at'] !=
-                                                          null)
-                                                      ? Container()
-                                                      : ValueListenableBuilder(
-                                                          valueListenable: bottomSheetOffset,
-                                                          builder: (context, offset, child) {
-                                                            double bottomPadding = 500 * (offset);
-                                                            return AnimatedPositioned(
-                                                              duration: const Duration(milliseconds: 300),
-                                                              bottom: bottomPadding,
-                                                              right: 20,
-                                                              child: Container(
-                                                                decoration: BoxDecoration(
-                                                                    boxShadow: [
-                                                                      BoxShadow(
-                                                                          blurRadius: 2,
-                                                                          color: Colors.black.withOpacity(0.2),
-                                                                          spreadRadius: 2)
-                                                                    ],
-                                                                    color: themeProvider.isDarkTheme
-                                                                        ? newRedColor
-                                                                        : page,
-                                                                    borderRadius:BorderRadius.circular(media.width *0.02)),
-                                                                child: Material(
-                                                                  color: Colors.transparent,
-                                                                  child: InkWell(
-                                                                    onTap: () async {
-
-                                                                      _onFollowLocationPressed();
-                                                                      if (locationAllowed == true && _areIconsReady()) {
-                                                                        await updateMarkersAndMap();
-                                                                      } else {
-                                                                        if (!_areIconsReady()) {
-                                                                          await _loadMarkerIcons();
-                                                                        }
-                                                                        // ... resto del código de manejo de permisos
-                                                                        // restartCurrentLocation();
-                                                                        restartCurrentLocationImproved();
+                                                                      : page,
+                                                                ),
+                                                              ),
+                                                            )
+                                                          ],
+                                                        ))
+                                                    : Container(),
+                    
+                                                //request popup accept or reject
+                    
+                                                //user cancelled request popup
+                                                (_reqCancelled == true)
+                                                    ? Positioned(
+                                                        bottom: media.height *
+                                                            0.5,
+                                                        child: Container(
+                                                          padding: EdgeInsets
+                                                              .all(media
+                                                                      .width *
+                                                                  0.05),
+                                                          decoration: BoxDecoration(
+                                                              borderRadius:
+                                                                  BorderRadius
+                                                                      .circular(
+                                                                          10),
+                                                              color: page,
+                                                              boxShadow: [
+                                                                BoxShadow(
+                                                                    color: Colors
+                                                                        .black
+                                                                        .withOpacity(
+                                                                            0.2),
+                                                                    blurRadius:
+                                                                        2,
+                                                                    spreadRadius:
+                                                                        2)
+                                                              ]),
+                                                          child: Text(languages[
+                                                                  choosenLanguage]
+                                                              [
+                                                              'text_user_cancelled_request']),
+                                                        ))
+                                                    : Container(),
+                    
+                                                /**
+                                                 * FIXME: FM - BTN Mi Ubicacion
+                                                 */
+                                                //*Boton de posicionamiento
+                                                (driverReq['accepted_at'] !=
+                                                        null)
+                                                    ? Container()
+                                                    : ValueListenableBuilder(
+                                                        valueListenable: bottomSheetOffset,
+                                                        builder: (context, offset, child) {
+                                                          double bottomPadding = 500 * (offset);
+                                                          return AnimatedPositioned(
+                                                            duration: const Duration(milliseconds: 300),
+                                                            bottom: bottomPadding,
+                                                            right: 20,
+                                                            child: Container(
+                                                              decoration: BoxDecoration(
+                                                                  boxShadow: [
+                                                                    BoxShadow(
+                                                                        blurRadius: 2,
+                                                                        color: Colors.black.withOpacity(0.2),
+                                                                        spreadRadius: 2)
+                                                                  ],
+                                                                  color: themeProvider.isDarkTheme
+                                                                      ? newRedColor
+                                                                      : page,
+                                                                  borderRadius:BorderRadius.circular(media.width *0.02)),
+                                                              child: Material(
+                                                                color: Colors.transparent,
+                                                                child: InkWell(
+                                                                  onTap: () async {
+                    
+                                                                    _onFollowLocationPressed();
+                                                                    if (locationAllowed == true && _areIconsReady()) {
+                                                                      await updateMarkersAndMap();
+                                                                    } else {
+                                                                      if (!_areIconsReady()) {
+                                                                        await _loadMarkerIcons();
                                                                       }
-                                                                    },
-                                                                    child:
-                                                                        SizedBox(
-                                                                      height:media.width *0.1,
-                                                                      width: media.width *0.1,
-                                                                      // alignment:
-                                                                      //     Alignment.center,
-                                                                      child: Icon(
-                                                                          Icons.my_location_sharp,
-                                                                          color: themeProvider.isDarkTheme
-                                                                              ? page
-                                                                              : newRedColor,
-                                                                          size: media.width * 0.068),
-                                                                    ),
+                                                                      // ... resto del código de manejo de permisos
+                                                                      // restartCurrentLocation();
+                                                                      restartCurrentLocationImproved();
+                                                                    }
+                                                                  },
+                                                                  child:
+                                                                      SizedBox(
+                                                                    height:media.width *0.1,
+                                                                    width: media.width *0.1,
+                                                                    // alignment:
+                                                                    //     Alignment.center,
+                                                                    child: Icon(
+                                                                        Icons.my_location_sharp,
+                                                                        color: themeProvider.isDarkTheme
+                                                                            ? page
+                                                                            : newRedColor,
+                                                                        size: media.width * 0.068),
                                                                   ),
                                                                 ),
                                                               ),
-                                                            );
-                                                          }),
-                                                    
-
-                                                  //*Boton de viajes disponibles
-                                                  /**
-                                                   * TODO: FM Reubicar Maker
-                                                   */
-                                                  (driverReq['accepted_at'] !=null)
-                                                      ? Container()
-                                                      : ValueListenableBuilder(
-                                                          valueListenable:bottomSheetOffset,
-                                                          builder: (context,offset, child) {
-                                                            double bottomPadding = 500 * (offset);
-                                                            return AnimatedPositioned(
-                                                              duration: const Duration(milliseconds: 300),
-                                                              bottom: bottomPadding,
-                                                              left: 20,
-                                                              child: BotonMostrarViajesDisponibles(
-                                                                onTap: () {
-                                                                  setState(() {
-                                                                    showRequestsOverlay = true;
-                                                                    showLocationRide = false;
-                                                                    mostrarRutaDobleTap = false;
-                                                                    dropProvider.mostrardDibujadoDestino = false;
-                                                                  });
-                                                                },
-                                                                numViajesDis: '${requestMetas.length}',
+                                                            ),
+                                                          );
+                                                        }),
+                                                  
+                    
+                                                //*Boton de viajes disponibles
+                                                /**
+                                                 * TODO: FM Reubicar Maker
+                                                 */
+                                                (driverReq['accepted_at'] !=null)
+                                                    ? Container()
+                                                    : ValueListenableBuilder(
+                                                        valueListenable:bottomSheetOffset,
+                                                        builder: (context,offset, child) {
+                                                          double bottomPadding = 500 * (offset);
+                                                          return AnimatedPositioned(
+                                                            duration: const Duration(milliseconds: 300),
+                                                            bottom: bottomPadding,
+                                                            left: 20,
+                                                            child: BotonMostrarViajesDisponibles(
+                                                              onTap: () {
+                                                                setState(() {
+                                                                  showRequestsOverlay = true;
+                                                                  // showLocationRide = false;
+                                                                  mostrarRutaDobleTap = false;
+                                                                  dropProvider.mostrardDibujadoDestino = false;
+                                                                });
+                                                              },
+                                                              numViajesDis: '${requestMetas.length}',
+                                                            ),
+                                                          );
+                                                        },
+                                                      ),
+                                                /**
+                                                 * FIXME: FM - Progress Bar
+                                                 */
+                                                // (driverReq['accepted_at'] !=null && _isCameraFollowing)
+                                                (_isCameraFollowing)
+                                                    ? Container()
+                                                    : ValueListenableBuilder(
+                                                        valueListenable:bottomSheetOffset,
+                                                        builder: (context, offset, child) {
+                                                          double bottomPadding = 460 * (offset);
+                                                          return AnimatedPositioned(
+                                                            duration: const Duration(milliseconds: 300),
+                                                            bottom: bottomPadding,
+                                                            width: media.width * 0.9,
+                                                            child: Column(
+                                                                spacing: 16.0,
+                                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                                children: <Widget>[
+                                                                  LinearProgressIndicator(
+                                                                    value: _currentProgress,
+                                                                    backgroundColor: isDarkTheme 
+                                                                      ? Colors.grey[800] 
+                                                                      : Colors.grey[300],
+                                                                    valueColor: AlwaysStoppedAnimation<Color>(newRedColor),
+                                                                    minHeight: 6,
+                                                                  ),
+                                                                ],
                                                               ),
-                                                            );
-                                                          },
-                                                        ),
-                                                  /**
-                                                   * FIXME: FM - Progress Bar
-                                                   */
-                                                  // (driverReq['accepted_at'] !=null && _isCameraFollowing)
-                                                  (_isCameraFollowing)
+                                                          );
+                                                        },
+                                                    ),
+                                                //*SHEET CARD QUE APARECE DESDE EL INICIO
+                                                Positioned(
+                                                  bottom: 0,
+                                                  child: BottomCardSheet(
+                                                    bottomSheetOffset: bottomSheetOffset,
+                                                  ),
+                                                ),
+                                                if (showRequestsOverlay && requestMetas.isNotEmpty && mostrarRutaDobleTap == false)
+                                                  (driverReq['accepted_at'] != null)
                                                       ? Container()
-                                                      : ValueListenableBuilder(
-                                                          valueListenable:bottomSheetOffset,
-                                                          builder: (context, offset, child) {
-                                                            double bottomPadding = 460 * (offset);
-                                                            return AnimatedPositioned(
-                                                              duration: const Duration(milliseconds: 300),
-                                                              bottom: bottomPadding,
-                                                              width: media.width * 0.9,
-                                                              child: Column(
-                                                                  spacing: 16.0,
-                                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                                  children: <Widget>[
-                                                                    LinearProgressIndicator(
-                                                                      value: _currentProgress,
-                                                                      backgroundColor: isDarkTheme 
-                                                                        ? Colors.grey[800] 
-                                                                        : Colors.grey[300],
-                                                                      valueColor: AlwaysStoppedAnimation<Color>(newRedColor),
-                                                                      minHeight: 6,
-                                                                    ),
-                                                                  ],
-                                                                ),
+                                                      : ShowRides(
+                                                         onDoubleTap: (int index) async {
+                                                        // 1. Mostrar un indicador de carga
+                                                        setState(() {
+                                                          estaCargando = true;
+                                                        });
+
+                                                        try {
+                                                          final requestMeta = requestMetas[index];
+
+                                                          // Asegurarse de que tenemos la posición actual
+                                                          if (currentPositionNew == null) {
+                                                            ScaffoldMessenger.of(context).showSnackBar(
+                                                              const SnackBar(content: Text('No se pudo obtener la ubicación actual.')),
                                                             );
+                                                            return; // Salir si no hay ubicación
+                                                          }
+
+                                                          // 2. Obtener la ruta de forma segura (await)
+                                                          final pointsToPickup = await getRouteFromGraphHopper(
+                                                              currentPositionNew!.latitude,
+                                                              currentPositionNew!.longitude,
+                                                              requestMeta.recogidaLat!,
+                                                              requestMeta.recogidaLong!);
+                                                          
+                                                          List<fmlt.LatLng> pointsToDestination = [];
+                                                          if (requestMeta.destinoLat != 0.0 && requestMeta.destinoLong != 0.0) {
+                                                            pointsToDestination = await getRouteFromGraphHopper(
+                                                                requestMeta.recogidaLat!,
+                                                                requestMeta.recogidaLong!,
+                                                                requestMeta.destinoLat!,
+                                                                requestMeta.destinoLong!);
+                                                          }
+
+                                                          // 3. Actualizar el estado CON TODA la información ya lista
+                                                          setState(() {
+                                                            mostrarRutaDobleTap = true;
+                                                            routePoints = pointsToPickup; // Ruta al punto de recogida
+
+                                                            final dropProvider = Provider.of<DropProvider>(context, listen: false);
+                                                            dropProvider.mostrardDibujadoDestino = pointsToDestination.isNotEmpty;
+                                                            dropProvider.routePointsDestino = pointsToDestination;
+
+                                                            showRequestsOverlay = false;
+                                                            requestIdDoubleTapUser = requestMeta.requestId;
+                                                            // ... (asigna las demás variables como ya lo hacías)
+                                                            nombreUsuario = requestMeta.nomUsuario;
+
+                                                            // Mover la cámara
+                                                            final pickupLocation = fmlt.LatLng(requestMeta.recogidaLat!, requestMeta.recogidaLong!);
+                                                            _fmController.move(pickupLocation, 16);
+                                                          });
+
+                                                          listenToRequestChanges(requestIdDoubleTapUser!);
+
+                                                        } catch (e) {
+                                                          print('Error al obtener la ruta en onDoubleTap: $e');
+                                                          ScaffoldMessenger.of(context).showSnackBar(
+                                                            const SnackBar(content: Text('No se pudo calcular la ruta. Inténtalo de nuevo.')),
+                                                          );
+                                                        } finally {
+                                                          // 4. Ocultar el indicador de carga, sin importar si hubo éxito o error
+                                                          setState(() {
+                                                            estaCargando = false;
+                                                          });
+                                                        }
+                                                      },
+                                                          rejectedRides: rejectedRides,
+                                                          listRequests: requestMetas,
+                                                          media: media,
+                                                          onTap: () {
+                                                            setState(() {
+                                                              showRequestsOverlay = false;
+                                                            });
                                                           },
                                                         ),
-                                                  //*SHEET CARD QUE APARECE DESDE EL INICIO
-                                                  Positioned(
-                                                    bottom: 0,
-                                                    child: BottomCardSheet(
-                                                      bottomSheetOffset: bottomSheetOffset,
+                    
+                                                if (estaCargando)
+                                                  Container(
+                                                    height: media.height * 1,
+                                                    width: media.width * 1,
+                                                    color: Colors.black.withOpacity(0.5),
+                                                    child: Center(
+                                                      child: CircularProgressIndicator(color: newRedColor),
                                                     ),
                                                   ),
-                                                  if (showRequestsOverlay && requestMetas.isNotEmpty && mostrarRutaDobleTap == false)
-                                                    (driverReq['accepted_at'] != null)
-                                                        ? Container()
-                                                        : ShowRides(
-                                                            onDoubleTap: (int index) async {
-                                                              setState(() {
-                                                                showLocationRide = true;
-                                                                showRequestsOverlay = false;
-                                                                requestIdDoubleTapUser = requestMetas[index].requestId;
-                                                                showRidesLatRecoger = requestMetas[index].recogidaLat;
-                                                                showRidesLonRecoger = requestMetas[index].recogidaLong;
-                                                                longitudeDestino = requestMetas[index].destinoLong;
-                                                                latitudeDestino = requestMetas[index].destinoLat;
-                                                                nombreUsuario = requestMetas[index].nomUsuario;
-                                                                final lonlat = fmlt.LatLng(showRidesLatRecoger!, showRidesLonRecoger!);
-                                                                _fmController.move(lonlat, 18);
+                    
+                                                // //*ESTE BOTON TIENE QUE centrar  al ususario
+                    
+                                                (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0)
+                                                    ? NotificarCliente(
+                                                        acceptDriverBottomSheetOffset: acceptDriverBottomSheetOffset,
+                                                        media: media,
+                                                        onTap: () async {
+                                                          showAdaptiveDialog(
+                                                              barrierDismissible: false,
+                                                              context: context,
+                                                              builder: (BuildContext context) {
+                                                                return const AlertaNotificarLlegada();
                                                               });
-
-                                                              // Obtener la ruta del servicio GraphHopper
-                                                              if (showRidesLatRecoger != null && showRidesLonRecoger != null) {
-                                                                try {
-                                                                  // Aquí llamamos a la función que obtiene la ruta desde GraphHopper
-                                                                  List<fmlt.LatLng> points = await getRouteFromGraphHopper(
-                                                                      currentPositionNew!.latitude,
-                                                                      currentPositionNew!.longitude,
-                                                                      showRidesLatRecoger!,
-                                                                      showRidesLonRecoger!
-                                                                    );
-                                                                  setState(() {
-                                                                    mostrarRutaDobleTap = true;
-                                                                    routePoints = points; // Actualizamos los puntos de la ruta
-                                                                  });
-                                                                } catch (e) {
-                                                                  print(
-                                                                      'Error al obtener la ruta: $e');
-                                                                }
-                                                              }
-                                                              if (latitudeDestino != 0.0 && longitudeDestino != 0.0) {
-                                                                try {
-                                                                  // Aquí llamamos a la función que obtiene la ruta desde GraphHopper
-                                                                  List<fmlt.LatLng>
-                                                                      points = await getRouteFromGraphHopper(
-                                                                            showRidesLatRecoger!,
-                                                                            showRidesLonRecoger!,
-                                                                            latitudeDestino!,
-                                                                            longitudeDestino!
-                                                                          );
-                                                                  setState(() {
-                                                                    dropProvider.mostrardDibujadoDestino = true;
-                                                                    dropProvider.routePointsDestino = points; // Actualizamos los puntos de la ruta
-                                                                  });
-                                                                } catch (e) {
-                                                                  print(
-                                                                      'Error al obtener la ruta: $e');
-                                                                }
-                                                              }
-                                                              // Seguir escuchando cambios en la solicitud
-                                                              listenToRequestChanges(requestIdDoubleTapUser!);
-                                                            },
-                                                            rejectedRides: rejectedRides,
-                                                            listRequests: requestMetas,
-                                                            media: media,
-                                                            onTap: () {
-                                                              setState(() {
-                                                                showRequestsOverlay = false;
-                                                              });
-                                                            },
-                                                          ),
-
-                                                  if (estaCargando)
-                                                    Container(
-                                                      height: media.height * 1,
-                                                      width: media.width * 1,
-                                                      color: Colors.black.withOpacity(0.5),
-                                                      child: Center(
-                                                        child: CircularProgressIndicator(color: newRedColor),
-                                                      ),
-                                                    ),
-
-                                                  // //*ESTE BOTON TIENE QUE centrar  al ususario
-
-                                                  (driverReq['is_driver_arrived'] == 1 && driverReq['is_trip_start'] == 0)
-                                                      ? NotificarCliente(
-                                                          acceptDriverBottomSheetOffset: acceptDriverBottomSheetOffset,
-                                                          media: media,
-                                                          onTap: () async {
-                                                            showAdaptiveDialog(
-                                                                barrierDismissible: false,
-                                                                context: context,
-                                                                builder: (BuildContext context) {
-                                                                  return const AlertaNotificarLlegada();
-                                                                });
-                                                          },
-                                                        )
-                                                      : const SizedBox(),
-                                                  // //*ESTE BOTON TIENE QUE ABRIR centrar el donde esta el ususario
-                                                  
-                                                  if (mostrarAlertaConfirmacion == true)
-                                                    Alertas(
-                                                      titulo: '¡El pasajero acaba de confirmar!',
-                                                      contenido: 'El pasajero ya está en camino, preparate para recibirlo.',
-                                                      textoBoton: 'Aceptar',
-                                                      botonOnTapAceptar: () {
-                                                        setState(() {
-                                                          mostrarAlertaConfirmacion = false;
-                                                        });
-                                                      },
-                                                      botonOnTapSalir: () {
+                                                        },
+                                                      )
+                                                    : const SizedBox(),
+                                                // //*ESTE BOTON TIENE QUE ABRIR centrar el donde esta el ususario
+                                                
+                                                if (mostrarAlertaConfirmacion == true)
+                                                  Alertas(
+                                                    titulo: '¡El pasajero acaba de confirmar!',
+                                                    contenido: 'El pasajero ya está en camino, preparate para recibirlo.',
+                                                    textoBoton: 'Aceptar',
+                                                    botonOnTapAceptar: () {
+                                                      setState(() {
                                                         mostrarAlertaConfirmacion = false;
-                                                      },
-                                                    ),
-
-                                                  //*Cuando se acpeta el viaje
-                                                  isAvailable == false
-                                                      ? Positioned(
-                                                          bottom: 0,
-                                                          child: BottomCardSheetDriverAccept(
-                                                            bottomSheetOffset: acceptDriverBottomSheetOffset,
-                                                            driverOtp: driverOtp,
-                                                            errorOtp: _errorOtp,
-                                                            navigationtype: navigationtype,
-                                                            isLoading: _isLoading,
-                                                            getStartOtp: getStartOtp,
-                                                            navigateLogout: navigateLogout,
-                                                            onTapCancelar: () async {
+                                                      });
+                                                    },
+                                                    botonOnTapSalir: () {
+                                                      mostrarAlertaConfirmacion = false;
+                                                    },
+                                                  ),
+                    
+                                                //*Cuando se acpeta el viaje
+                                                isAvailable == false
+                                                    ? Positioned(
+                                                        bottom: 0,
+                                                        child: BottomCardSheetDriverAccept(
+                                                          bottomSheetOffset: acceptDriverBottomSheetOffset,
+                                                          driverOtp: driverOtp,
+                                                          errorOtp: _errorOtp,
+                                                          navigationtype: navigationtype,
+                                                          isLoading: _isLoading,
+                                                          getStartOtp: getStartOtp,
+                                                          navigateLogout: navigateLogout,
+                                                          onTapCancelar: () async {
+                                                            setState(() {
+                                                              _isLoading = true;
+                                                            });
+                                                            var val = await cancelReason(
+                                                                (driverReq['is_driver_arrived'] == 0)
+                                                                    ? 'before'
+                                                                    : 'after'
+                                                              );
+                                                            if (val == true) {
                                                               setState(() {
-                                                                _isLoading = true;
+                                                                cancelRequest = true;
+                                                                _cancelReason = '';
+                                                                _cancellingError = '';
                                                               });
-                                                              var val = await cancelReason(
-                                                                  (driverReq['is_driver_arrived'] == 0)
-                                                                      ? 'before'
-                                                                      : 'after'
-                                                                );
-                                                              if (val == true) {
-                                                                setState(() {
-                                                                  cancelRequest = true;
-                                                                  _cancelReason = '';
-                                                                  _cancellingError = '';
-                                                                });
-                                                                //   Future.delayed(const Duration(seconds: 1), (){
-                                                                //   Navigator.pop(context);
-                                                                // });
-                                                              }
-                                                              setState(() {
-                                                                _isLoading = false;
-                                                              });
-                                                            },
-                                                            // bottomSheetOffset: bottomSheetOffset,
-                                                          ),
-                                                        )
-                                                      : Container()
-                                                ],
-                                              )
-                                            : Container(),
-                              ],
-                            ),
+                                                              //   Future.delayed(const Duration(seconds: 1), (){
+                                                              //   Navigator.pop(context);
+                                                              // });
+                                                            }
+                                                            setState(() {
+                                                              _isLoading = false;
+                                                            });
+                                                          },
+                                                          // bottomSheetOffset: bottomSheetOffset,
+                                                        ),
+                                                      )
+                                                    : Container()
+                                              ],
+                                            )
+                                          : Container(),
+                            ],
                           ),
-                          (_locationDenied == true)
-                              ? Positioned(
-                                  child: Container(
+                        ),
+                        (_locationDenied == true)
+                            ? Positioned(
+                                child: Container(
+                                height: media.height * 1,
+                                width: media.width * 1,
+                                color: Colors.transparent.withOpacity(0.6),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: media.width * 0.9,
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
+                                        children: [
+                                          InkWell(
+                                            onTap: () {
+                                              setState(() {
+                                                _locationDenied = false;
+                                              });
+                                            },
+                                            child: Container(
+                                              height: media.height * 0.05,
+                                              width: media.height * 0.05,
+                                              decoration: BoxDecoration(
+                                                color: page,
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Icon(Icons.cancel,
+                                                  color: buttonColor),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    SizedBox(height: media.width * 0.025),
+                                    Container(
+                                      padding:
+                                          EdgeInsets.all(media.width * 0.05),
+                                      width: media.width * 0.9,
+                                      decoration: BoxDecoration(
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          color: page,
+                                          boxShadow: [
+                                            BoxShadow(
+                                                blurRadius: 2.0,
+                                                spreadRadius: 2.0,
+                                                color: Colors.black
+                                                    .withOpacity(0.2))
+                                          ]),
+                                      child: Column(
+                                        children: [
+                                          SizedBox(
+                                              width: media.width * 0.8,
+                                              child: Text(
+                                                languages[choosenLanguage][
+                                                    'text_open_loc_settings'],
+                                                style: GoogleFonts.notoSans(
+                                                    fontSize:
+                                                        media.width * sixteen,
+                                                    color: textColor,
+                                                    fontWeight:
+                                                        FontWeight.w600),
+                                              )),
+                                          SizedBox(
+                                              height: media.width * 0.05),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment
+                                                    .spaceBetween,
+                                            children: [
+                                              InkWell(
+                                                  onTap: () async {
+                                                    await perm
+                                                        .openAppSettings();
+                                                  },
+                                                  child: Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_open_settings'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            color:
+                                                                buttonColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600),
+                                                  )),
+                                              InkWell(
+                                                  onTap: () async {
+                                                    setState(() {
+                                                      _locationDenied = false;
+                                                      _isLoading = true;
+                                                    });
+                    
+                                                    /**
+                                                     * FIXME: FM 
+                                                     */
+                                                    // getLocs();
+                                                    getLocsImproved();
+                                                  },
+                                                  child: Text(
+                                                    languages[choosenLanguage]
+                                                        ['text_done'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            color:
+                                                                buttonColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600),
+                                                  ))
+                                            ],
+                                          )
+                                        ],
+                                      ),
+                                    )
+                                  ],
+                                ),
+                              ))
+                            : Container(),
+                        //enter otp
+                        (getStartOtp == true &&
+                                driverReq.isNotEmpty &&
+                                driverReq['enable_shipment_load_feature']
+                                        .toString() !=
+                                    '1')
+                            ? Positioned(
+                                top: 0,
+                                child: Container(
                                   height: media.height * 1,
                                   width: media.width * 1,
-                                  color: Colors.transparent.withOpacity(0.6),
+                                  color: Colors.transparent.withOpacity(0.5),
                                   child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.center,
                                     children: [
                                       SizedBox(
-                                        width: media.width * 0.9,
+                                        width: media.width * 0.8,
                                         child: Row(
                                           mainAxisAlignment:
                                               MainAxisAlignment.end,
@@ -4410,7 +4579,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                             InkWell(
                                               onTap: () {
                                                 setState(() {
-                                                  _locationDenied = false;
+                                                  getStartOtp = false;
                                                 });
                                               },
                                               child: Container(
@@ -4429,412 +4598,802 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                       ),
                                       SizedBox(height: media.width * 0.025),
                                       Container(
-                                        padding:
-                                            EdgeInsets.all(media.width * 0.05),
-                                        width: media.width * 0.9,
+                                        padding: EdgeInsets.all(
+                                            media.width * 0.05),
+                                        width: media.width * 0.8,
+                                        // height: media.width * 0.7,
                                         decoration: BoxDecoration(
                                             borderRadius:
-                                                BorderRadius.circular(12),
+                                                BorderRadius.circular(10),
                                             color: page,
                                             boxShadow: [
                                               BoxShadow(
-                                                  blurRadius: 2.0,
-                                                  spreadRadius: 2.0,
                                                   color: Colors.black
-                                                      .withOpacity(0.2))
+                                                      .withOpacity(0.2),
+                                                  spreadRadius: 2,
+                                                  blurRadius: 2)
                                             ]),
                                         child: Column(
                                           children: [
-                                            SizedBox(
-                                                width: media.width * 0.8,
-                                                child: Text(
-                                                  languages[choosenLanguage][
-                                                      'text_open_loc_settings'],
-                                                  style: GoogleFonts.notoSans(
-                                                      fontSize:
-                                                          media.width * sixteen,
-                                                      color: textColor,
-                                                      fontWeight:
-                                                          FontWeight.w600),
-                                                )),
+                                            Text(
+                                              languages[choosenLanguage]
+                                                  ['text_driver_otp'],
+                                              style: GoogleFonts.notoSans(
+                                                  fontSize:
+                                                      media.width * eighteen,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: textColor),
+                                            ),
                                             SizedBox(
                                                 height: media.width * 0.05),
+                                            Text(
+                                              languages[choosenLanguage]
+                                                  ['text_enterdriverotp'],
+                                              style: GoogleFonts.notoSans(
+                                                fontSize:
+                                                    media.width * twelve,
+                                                color: textColor
+                                                    .withOpacity(0.7),
+                                              ),
+                                              textAlign: TextAlign.center,
+                                            ),
+                                            SizedBox(
+                                              height: media.width * 0.05,
+                                            ),
                                             Row(
                                               mainAxisAlignment:
                                                   MainAxisAlignment
-                                                      .spaceBetween,
+                                                      .spaceAround,
                                               children: [
-                                                InkWell(
-                                                    onTap: () async {
-                                                      await perm
-                                                          .openAppSettings();
+                                                Container(
+                                                  alignment: Alignment.center,
+                                                  width: media.width * 0.12,
+                                                  color: page,
+                                                  child: TextFormField(
+                                                    onChanged: (val) {
+                                                      if (val.length == 1) {
+                                                        setState(() {
+                                                          _otp1 = val;
+                                                          driverOtp = _otp1 +
+                                                              _otp2 +
+                                                              _otp3 +
+                                                              _otp4;
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .nextFocus();
+                                                        });
+                                                      }
                                                     },
-                                                    child: Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_open_settings'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              color:
-                                                                  buttonColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600),
-                                                    )),
-                                                InkWell(
-                                                    onTap: () async {
-                                                      setState(() {
-                                                        _locationDenied = false;
-                                                        _isLoading = true;
-                                                      });
-
-                                                      /**
-                                                       * FIXME: FM 
-                                                       */
-                                                      // getLocs();
-                                                      getLocsImproved();
+                                                    keyboardType:
+                                                        TextInputType.number,
+                                                    maxLength: 1,
+                                                    textAlign:
+                                                        TextAlign.center,
+                                                    style: GoogleFonts
+                                                        .notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold,
+                                                            color: textColor),
+                                                    decoration: const InputDecoration(
+                                                        counterText: '',
+                                                        border: UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Colors
+                                                                    .black,
+                                                                width: 1.5,
+                                                                style: BorderStyle
+                                                                    .solid))),
+                                                  ),
+                                                ),
+                                                Container(
+                                                  alignment: Alignment.center,
+                                                  width: media.width * 0.12,
+                                                  color: page,
+                                                  child: TextFormField(
+                                                    onChanged: (val) {
+                                                      if (val.length == 1) {
+                                                        setState(() {
+                                                          _otp2 = val;
+                                                          driverOtp = _otp1 +
+                                                              _otp2 +
+                                                              _otp3 +
+                                                              _otp4;
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .nextFocus();
+                                                        });
+                                                      } else {
+                                                        setState(() {
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .previousFocus();
+                                                        });
+                                                      }
                                                     },
-                                                    child: Text(
-                                                      languages[choosenLanguage]
-                                                          ['text_done'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              color:
-                                                                  buttonColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600),
-                                                    ))
+                                                    style: GoogleFonts
+                                                        .notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold,
+                                                            color: textColor),
+                                                    keyboardType:
+                                                        TextInputType.number,
+                                                    maxLength: 1,
+                                                    textAlign:
+                                                        TextAlign.center,
+                                                    decoration: const InputDecoration(
+                                                        counterText: '',
+                                                        border: UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Colors
+                                                                    .black,
+                                                                width: 1.5,
+                                                                style: BorderStyle
+                                                                    .solid))),
+                                                  ),
+                                                ),
+                                                Container(
+                                                  alignment: Alignment.center,
+                                                  width: media.width * 0.12,
+                                                  color: page,
+                                                  child: TextFormField(
+                                                    onChanged: (val) {
+                                                      if (val.length == 1) {
+                                                        setState(() {
+                                                          _otp3 = val;
+                                                          driverOtp = _otp1 +
+                                                              _otp2 +
+                                                              _otp3 +
+                                                              _otp4;
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .nextFocus();
+                                                        });
+                                                      } else {
+                                                        setState(() {
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .previousFocus();
+                                                        });
+                                                      }
+                                                    },
+                                                    style: GoogleFonts
+                                                        .notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold,
+                                                            color: textColor),
+                                                    keyboardType:
+                                                        TextInputType.number,
+                                                    maxLength: 1,
+                                                    textAlign:
+                                                        TextAlign.center,
+                                                    decoration: const InputDecoration(
+                                                        counterText: '',
+                                                        border: UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Colors
+                                                                    .black,
+                                                                width: 1.5,
+                                                                style: BorderStyle
+                                                                    .solid))),
+                                                  ),
+                                                ),
+                                                Container(
+                                                  alignment: Alignment.center,
+                                                  width: media.width * 0.12,
+                                                  color: page,
+                                                  child: TextFormField(
+                                                    onChanged: (val) {
+                                                      if (val.length == 1) {
+                                                        setState(() {
+                                                          _otp4 = val;
+                                                          driverOtp = _otp1 +
+                                                              _otp2 +
+                                                              _otp3 +
+                                                              _otp4;
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .nextFocus();
+                                                        });
+                                                      } else {
+                                                        setState(() {
+                                                          FocusScope.of(
+                                                                  context)
+                                                              .previousFocus();
+                                                        });
+                                                      }
+                                                    },
+                                                    style: GoogleFonts
+                                                        .notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold,
+                                                            color: textColor),
+                                                    keyboardType:
+                                                        TextInputType.number,
+                                                    maxLength: 1,
+                                                    textAlign:
+                                                        TextAlign.center,
+                                                    decoration: const InputDecoration(
+                                                        counterText: '',
+                                                        border: UnderlineInputBorder(
+                                                            borderSide: BorderSide(
+                                                                color: Colors
+                                                                    .black,
+                                                                width: 1.5,
+                                                                style: BorderStyle
+                                                                    .solid))),
+                                                  ),
+                                                ),
                                               ],
+                                            ),
+                                            SizedBox(
+                                              height: media.width * 0.04,
+                                            ),
+                                            (_errorOtp == true)
+                                                ? Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_error_trip_otp'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            color: Colors.red,
+                                                            fontSize:
+                                                                media.width *
+                                                                    twelve),
+                                                  )
+                                                : Container(),
+                                            SizedBox(
+                                                height: media.width * 0.02),
+                                            Button(
+                                              onTap: () async {
+                                                if (driverOtp.length != 4) {
+                                                  setState(() {});
+                                                } else {
+                                                  setState(() {
+                                                    _errorOtp = false;
+                                                    _isLoading = true;
+                                                  });
+                                                  var val = await tripStart();
+                                                  if (val == 'logout') {
+                                                    navigateLogout();
+                                                  } else if (val !=
+                                                      'success') {
+                                                    setState(() {
+                                                      _errorOtp = true;
+                                                      _isLoading = false;
+                                                    });
+                                                  } else {
+                                                    setState(() {
+                                                      _isLoading = false;
+                                                      getStartOtp = false;
+                                                    });
+                                                  }
+                                                }
+                                              },
+                                              text: languages[choosenLanguage]['text_confirm'],
                                             )
                                           ],
                                         ),
-                                      )
+                                      ),
                                     ],
                                   ),
-                                ))
-                              : Container(),
-                          //enter otp
-                          (getStartOtp == true &&
-                                  driverReq.isNotEmpty &&
-                                  driverReq['enable_shipment_load_feature']
-                                          .toString() !=
-                                      '1')
-                              ? Positioned(
-                                  top: 0,
-                                  child: Container(
-                                    height: media.height * 1,
-                                    width: media.width * 1,
-                                    color: Colors.transparent.withOpacity(0.5),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: media.width * 0.8,
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.end,
-                                            children: [
-                                              InkWell(
-                                                onTap: () {
-                                                  setState(() {
-                                                    getStartOtp = false;
-                                                  });
-                                                },
-                                                child: Container(
-                                                  height: media.height * 0.05,
-                                                  width: media.height * 0.05,
-                                                  decoration: BoxDecoration(
-                                                    color: page,
-                                                    shape: BoxShape.circle,
+                                ),
+                              )
+                            : (getStartOtp == true && driverReq.isNotEmpty)
+                                ? Positioned(
+                                    top: 0,
+                                    child: Container(
+                                      height: media.height * 1,
+                                      width: media.width * 1,
+                                      padding: EdgeInsets.fromLTRB(
+                                          media.width * 0.1,
+                                          MediaQuery.of(context).padding.top +
+                                              media.width * 0.05,
+                                          media.width * 0.1,
+                                          media.width * 0.05),
+                                      color: page,
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.start,
+                                        children: [
+                                          SizedBox(
+                                            width: media.width * 0.8,
+                                            child: Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.end,
+                                              children: [
+                                                InkWell(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      getStartOtp = false;
+                                                    });
+                                                  },
+                                                  child: Container(
+                                                    height:
+                                                        media.height * 0.05,
+                                                    width:
+                                                        media.height * 0.05,
+                                                    decoration: BoxDecoration(
+                                                      color: page,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: Icon(Icons.cancel,
+                                                        color: buttonColor),
                                                   ),
-                                                  child: Icon(Icons.cancel,
-                                                      color: buttonColor),
                                                 ),
-                                              ),
-                                            ],
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                        SizedBox(height: media.width * 0.025),
-                                        Container(
-                                          padding: EdgeInsets.all(
-                                              media.width * 0.05),
-                                          width: media.width * 0.8,
-                                          // height: media.width * 0.7,
-                                          decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(10),
-                                              color: page,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                    color: Colors.black
-                                                        .withOpacity(0.2),
-                                                    spreadRadius: 2,
-                                                    blurRadius: 2)
-                                              ]),
-                                          child: Column(
-                                            children: [
-                                              Text(
-                                                languages[choosenLanguage]
-                                                    ['text_driver_otp'],
-                                                style: GoogleFonts.notoSans(
-                                                    fontSize:
-                                                        media.width * eighteen,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: textColor),
-                                              ),
-                                              SizedBox(
-                                                  height: media.width * 0.05),
-                                              Text(
-                                                languages[choosenLanguage]
-                                                    ['text_enterdriverotp'],
-                                                style: GoogleFonts.notoSans(
-                                                  fontSize:
-                                                      media.width * twelve,
-                                                  color: textColor
-                                                      .withOpacity(0.7),
-                                                ),
-                                                textAlign: TextAlign.center,
-                                              ),
-                                              SizedBox(
-                                                height: media.width * 0.05,
-                                              ),
-                                              Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment
-                                                        .spaceAround,
+                                          SizedBox(
+                                              height: media.width * 0.025),
+                                          Expanded(
+                                            child: SingleChildScrollView(
+                                              child: Column(
                                                 children: [
-                                                  Container(
-                                                    alignment: Alignment.center,
-                                                    width: media.width * 0.12,
-                                                    color: page,
-                                                    child: TextFormField(
-                                                      onChanged: (val) {
-                                                        if (val.length == 1) {
-                                                          setState(() {
-                                                            _otp1 = val;
-                                                            driverOtp = _otp1 +
-                                                                _otp2 +
-                                                                _otp3 +
-                                                                _otp4;
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .nextFocus();
-                                                          });
-                                                        }
-                                                      },
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      maxLength: 1,
-                                                      textAlign:
-                                                          TextAlign.center,
+                                                  (driverReq['show_otp_feature'] ==
+                                                          true)
+                                                      ? Column(children: [
+                                                          Text(
+                                                            languages[
+                                                                    choosenLanguage]
+                                                                [
+                                                                'text_driver_otp'],
+                                                            style: GoogleFonts.notoSans(
+                                                                fontSize: media
+                                                                        .width *
+                                                                    eighteen,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .bold,
+                                                                color:
+                                                                    textColor),
+                                                          ),
+                                                          SizedBox(
+                                                              height: media
+                                                                      .width *
+                                                                  0.05),
+                                                          Text(
+                                                            languages[
+                                                                    choosenLanguage]
+                                                                [
+                                                                'text_enterdriverotp'],
+                                                            style: GoogleFonts
+                                                                .notoSans(
+                                                              fontSize: media
+                                                                      .width *
+                                                                  twelve,
+                                                              color: textColor
+                                                                  .withOpacity(
+                                                                      0.7),
+                                                            ),
+                                                            textAlign:
+                                                                TextAlign
+                                                                    .center,
+                                                          ),
+                                                          SizedBox(
+                                                            height:
+                                                                media.width *
+                                                                    0.05,
+                                                          ),
+                                                          Row(
+                                                            mainAxisAlignment:
+                                                                MainAxisAlignment
+                                                                    .spaceAround,
+                                                            children: [
+                                                              Container(
+                                                                alignment:
+                                                                    Alignment
+                                                                        .center,
+                                                                width: media
+                                                                        .width *
+                                                                    0.12,
+                                                                color: page,
+                                                                child:
+                                                                    TextFormField(
+                                                                  onChanged:
+                                                                      (val) {
+                                                                    if (val.length ==
+                                                                        1) {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp1 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .nextFocus();
+                                                                      });
+                                                                    }
+                                                                  },
+                                                                  style: GoogleFonts.notoSans(
+                                                                      color:
+                                                                          textColor,
+                                                                      fontSize:
+                                                                          media.width *
+                                                                              sixteen),
+                                                                  keyboardType:
+                                                                      TextInputType
+                                                                          .number,
+                                                                  maxLength:
+                                                                      1,
+                                                                  textAlign:
+                                                                      TextAlign
+                                                                          .center,
+                                                                  decoration: InputDecoration(
+                                                                      counterText:
+                                                                          '',
+                                                                      border: UnderlineInputBorder(
+                                                                          borderSide: BorderSide(
+                                                                              color: textColor,
+                                                                              width: 1.5,
+                                                                              style: BorderStyle.solid))),
+                                                                ),
+                                                              ),
+                                                              Container(
+                                                                alignment:
+                                                                    Alignment
+                                                                        .center,
+                                                                width: media
+                                                                        .width *
+                                                                    0.12,
+                                                                color: page,
+                                                                child:
+                                                                    TextFormField(
+                                                                  onChanged:
+                                                                      (val) {
+                                                                    if (val.length ==
+                                                                        1) {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp2 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .nextFocus();
+                                                                      });
+                                                                    } else {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp2 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .previousFocus();
+                                                                      });
+                                                                    }
+                                                                  },
+                                                                  style: GoogleFonts.notoSans(
+                                                                      color:
+                                                                          textColor,
+                                                                      fontSize:
+                                                                          media.width *
+                                                                              sixteen),
+                                                                  keyboardType:
+                                                                      TextInputType
+                                                                          .number,
+                                                                  maxLength:
+                                                                      1,
+                                                                  textAlign:
+                                                                      TextAlign
+                                                                          .center,
+                                                                  decoration: InputDecoration(
+                                                                      counterText:
+                                                                          '',
+                                                                      border: UnderlineInputBorder(
+                                                                          borderSide: BorderSide(
+                                                                              color: textColor,
+                                                                              width: 1.5,
+                                                                              style: BorderStyle.solid))),
+                                                                ),
+                                                              ),
+                                                              Container(
+                                                                alignment:
+                                                                    Alignment
+                                                                        .center,
+                                                                width: media
+                                                                        .width *
+                                                                    0.12,
+                                                                color: page,
+                                                                child:
+                                                                    TextFormField(
+                                                                  onChanged:
+                                                                      (val) {
+                                                                    if (val.length ==
+                                                                        1) {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp3 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .nextFocus();
+                                                                      });
+                                                                    } else {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp3 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .previousFocus();
+                                                                      });
+                                                                    }
+                                                                  },
+                                                                  style: GoogleFonts.notoSans(
+                                                                      color:
+                                                                          textColor,
+                                                                      fontSize:
+                                                                          media.width *
+                                                                              sixteen),
+                                                                  keyboardType:
+                                                                      TextInputType
+                                                                          .number,
+                                                                  maxLength:
+                                                                      1,
+                                                                  textAlign:
+                                                                      TextAlign
+                                                                          .center,
+                                                                  decoration: InputDecoration(
+                                                                      counterText:
+                                                                          '',
+                                                                      border: UnderlineInputBorder(
+                                                                          borderSide: BorderSide(
+                                                                              color: textColor,
+                                                                              width: 1.5,
+                                                                              style: BorderStyle.solid))),
+                                                                ),
+                                                              ),
+                                                              Container(
+                                                                alignment:
+                                                                    Alignment
+                                                                        .center,
+                                                                width: media
+                                                                        .width *
+                                                                    0.12,
+                                                                color: page,
+                                                                child:
+                                                                    TextFormField(
+                                                                  onChanged:
+                                                                      (val) {
+                                                                    if (val.length ==
+                                                                        1) {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp4 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .nextFocus();
+                                                                      });
+                                                                    } else {
+                                                                      setState(
+                                                                          () {
+                                                                        _otp4 =
+                                                                            val;
+                                                                        driverOtp = _otp1 +
+                                                                            _otp2 +
+                                                                            _otp3 +
+                                                                            _otp4;
+                                                                        FocusScope.of(context)
+                                                                            .previousFocus();
+                                                                      });
+                                                                    }
+                                                                  },
+                                                                  style: GoogleFonts.notoSans(
+                                                                      color:
+                                                                          textColor,
+                                                                      fontSize:
+                                                                          media.width *
+                                                                              sixteen),
+                                                                  keyboardType:
+                                                                      TextInputType
+                                                                          .number,
+                                                                  maxLength:
+                                                                      1,
+                                                                  textAlign:
+                                                                      TextAlign
+                                                                          .center,
+                                                                  decoration: InputDecoration(
+                                                                      counterText:
+                                                                          '',
+                                                                      border: UnderlineInputBorder(
+                                                                          borderSide: BorderSide(
+                                                                              color: textColor,
+                                                                              width: 1.5,
+                                                                              style: BorderStyle.solid))),
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                          SizedBox(
+                                                            height:
+                                                                media.width *
+                                                                    0.04,
+                                                          ),
+                                                          (_errorOtp == true)
+                                                              ? Text(
+                                                                  languages[
+                                                                          choosenLanguage]
+                                                                      [
+                                                                      'text_error_trip_otp'],
+                                                                  style: GoogleFonts.notoSans(
+                                                                      color: Colors
+                                                                          .red,
+                                                                      fontSize:
+                                                                          media.width *
+                                                                              twelve),
+                                                                )
+                                                              : Container(),
+                                                          SizedBox(
+                                                              height: media
+                                                                      .width *
+                                                                  0.02),
+                                                        ])
+                                                      : Container(),
+                                                  SizedBox(
+                                                    width: media.width * 0.8,
+                                                    child: Text(
+                                                      languages[
+                                                              choosenLanguage]
+                                                          [
+                                                          'text_shipment_title'],
                                                       style: GoogleFonts
                                                           .notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              color: textColor),
-                                                      decoration: const InputDecoration(
-                                                          counterText: '',
-                                                          border: UnderlineInputBorder(
-                                                              borderSide: BorderSide(
-                                                                  color: Colors
-                                                                      .black,
-                                                                  width: 1.5,
-                                                                  style: BorderStyle
-                                                                      .solid))),
-                                                    ),
-                                                  ),
-                                                  Container(
-                                                    alignment: Alignment.center,
-                                                    width: media.width * 0.12,
-                                                    color: page,
-                                                    child: TextFormField(
-                                                      onChanged: (val) {
-                                                        if (val.length == 1) {
-                                                          setState(() {
-                                                            _otp2 = val;
-                                                            driverOtp = _otp1 +
-                                                                _otp2 +
-                                                                _otp3 +
-                                                                _otp4;
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .nextFocus();
-                                                          });
-                                                        } else {
-                                                          setState(() {
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .previousFocus();
-                                                          });
-                                                        }
-                                                      },
-                                                      style: GoogleFonts
-                                                          .notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              color: textColor),
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      maxLength: 1,
+                                                        fontSize:
+                                                            media.width *
+                                                                eighteen,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        color: textColor,
+                                                      ),
                                                       textAlign:
                                                           TextAlign.center,
-                                                      decoration: const InputDecoration(
-                                                          counterText: '',
-                                                          border: UnderlineInputBorder(
-                                                              borderSide: BorderSide(
-                                                                  color: Colors
-                                                                      .black,
-                                                                  width: 1.5,
-                                                                  style: BorderStyle
-                                                                      .solid))),
                                                     ),
                                                   ),
+                                                  SizedBox(
+                                                      height:
+                                                          media.width * 0.02),
                                                   Container(
-                                                    alignment: Alignment.center,
-                                                    width: media.width * 0.12,
-                                                    color: page,
-                                                    child: TextFormField(
-                                                      onChanged: (val) {
-                                                        if (val.length == 1) {
-                                                          setState(() {
-                                                            _otp3 = val;
-                                                            driverOtp = _otp1 +
-                                                                _otp2 +
-                                                                _otp3 +
-                                                                _otp4;
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .nextFocus();
-                                                          });
-                                                        } else {
-                                                          setState(() {
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .previousFocus();
-                                                          });
-                                                        }
-                                                      },
-                                                      style: GoogleFonts
-                                                          .notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              color: textColor),
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      maxLength: 1,
-                                                      textAlign:
-                                                          TextAlign.center,
-                                                      decoration: const InputDecoration(
-                                                          counterText: '',
-                                                          border: UnderlineInputBorder(
-                                                              borderSide: BorderSide(
-                                                                  color: Colors
-                                                                      .black,
-                                                                  width: 1.5,
-                                                                  style: BorderStyle
-                                                                      .solid))),
-                                                    ),
+                                                      height:
+                                                          media.width * 0.5,
+                                                      width:
+                                                          media.width * 0.5,
+                                                      decoration:
+                                                          BoxDecoration(
+                                                        border: Border.all(
+                                                            color:
+                                                                borderLines,
+                                                            width: 1.1),
+                                                      ),
+                                                      child:
+                                                          (shipLoadImage ==
+                                                                  null)
+                                                              ? InkWell(
+                                                                  onTap: () {
+                                                                    pickImageFromCamera(
+                                                                        1);
+                                                                  },
+                                                                  child:
+                                                                      Center(
+                                                                    child: Text(
+                                                                        languages[choosenLanguage]
+                                                                            [
+                                                                            'text_add_shipmentimage'],
+                                                                        style: GoogleFonts.notoSans(
+                                                                            fontSize: media.width *
+                                                                                twelve,
+                                                                            color:
+                                                                                hintColor),
+                                                                        textAlign:
+                                                                            TextAlign.center),
+                                                                  ),
+                                                                )
+                                                              : InkWell(
+                                                                  onTap: () {
+                                                                    pickImageFromCamera(
+                                                                        1);
+                                                                  },
+                                                                  child:
+                                                                      Container(
+                                                                    height:
+                                                                        media.width *
+                                                                            0.5,
+                                                                    width: media
+                                                                            .width *
+                                                                        0.5,
+                                                                    decoration: BoxDecoration(
+                                                                        image: DecorationImage(
+                                                                            image: FileImage(File(shipLoadImage)),
+                                                                            fit: BoxFit.contain,
+                                                                            colorFilter: ColorFilter.mode(Colors.white.withOpacity(0.5), BlendMode.dstATop))),
+                                                                    child: Center(
+                                                                        child: Text(
+                                                                            languages[choosenLanguage]['text_edit_shipmentimage'],
+                                                                            style: GoogleFonts.notoSans(fontSize: media.width * twelve, color: textColor),
+                                                                            textAlign: TextAlign.center)),
+                                                                  ),
+                                                                )),
+                                                  SizedBox(
+                                                    height:
+                                                        media.width * 0.05,
                                                   ),
-                                                  Container(
-                                                    alignment: Alignment.center,
-                                                    width: media.width * 0.12,
-                                                    color: page,
-                                                    child: TextFormField(
-                                                      onChanged: (val) {
-                                                        if (val.length == 1) {
-                                                          setState(() {
-                                                            _otp4 = val;
-                                                            driverOtp = _otp1 +
-                                                                _otp2 +
-                                                                _otp3 +
-                                                                _otp4;
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .nextFocus();
-                                                          });
-                                                        } else {
-                                                          setState(() {
-                                                            FocusScope.of(
-                                                                    context)
-                                                                .previousFocus();
-                                                          });
-                                                        }
-                                                      },
-                                                      style: GoogleFonts
-                                                          .notoSans(
-                                                              fontSize:
-                                                                  media.width *
+                                                  (beforeImageUploadError !=
+                                                          '')
+                                                      ? SizedBox(
+                                                          width: media.width *
+                                                              0.9,
+                                                          child: Text(
+                                                              beforeImageUploadError,
+                                                              style: GoogleFonts.notoSans(
+                                                                  fontSize: media
+                                                                          .width *
                                                                       sixteen,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                              color: textColor),
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      maxLength: 1,
-                                                      textAlign:
-                                                          TextAlign.center,
-                                                      decoration: const InputDecoration(
-                                                          counterText: '',
-                                                          border: UnderlineInputBorder(
-                                                              borderSide: BorderSide(
                                                                   color: Colors
-                                                                      .black,
-                                                                  width: 1.5,
-                                                                  style: BorderStyle
-                                                                      .solid))),
-                                                    ),
-                                                  ),
+                                                                      .red),
+                                                              textAlign:
+                                                                  TextAlign
+                                                                      .center),
+                                                        )
+                                                      : Container()
                                                 ],
                                               ),
-                                              SizedBox(
-                                                height: media.width * 0.04,
-                                              ),
-                                              (_errorOtp == true)
-                                                  ? Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_error_trip_otp'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              color: Colors.red,
-                                                              fontSize:
-                                                                  media.width *
-                                                                      twelve),
-                                                    )
-                                                  : Container(),
-                                              SizedBox(
-                                                  height: media.width * 0.02),
-                                              Button(
-                                                onTap: () async {
-                                                  if (driverOtp.length != 4) {
-                                                    setState(() {});
-                                                  } else {
-                                                    setState(() {
-                                                      _errorOtp = false;
-                                                      _isLoading = true;
-                                                    });
-                                                    var val = await tripStart();
+                                            ),
+                                          ),
+                                          SizedBox(
+                                              height: media.width * 0.02),
+                                          Button(
+                                            onTap: () async {
+                                              if (driverReq[
+                                                      'show_otp_feature'] ==
+                                                  true) {
+                                                if (driverOtp.length != 4 ||
+                                                    shipLoadImage == null) {
+                                                  setState(() {});
+                                                } else {
+                                                  setState(() {
+                                                    _errorOtp = false;
+                                                    beforeImageUploadError =
+                                                        '';
+                                                    _isLoading = true;
+                                                  });
+                                                  var upload =
+                                                      await uploadLoadingImage(
+                                                          shipLoadImage);
+                                                  if (upload == 'success') {
+                                                    var val =
+                                                        await tripStart();
                                                     if (val == 'logout') {
                                                       navigateLogout();
                                                     } else if (val !=
@@ -4849,815 +5408,1194 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                         getStartOtp = false;
                                                       });
                                                     }
+                                                  } else if (upload ==
+                                                      'logout') {
+                                                    navigateLogout();
+                                                  } else {
+                                                    setState(() {
+                                                      beforeImageUploadError =
+                                                          languages[
+                                                                  choosenLanguage]
+                                                              [
+                                                              'text_somethingwentwrong'];
+                                                      _isLoading = false;
+                                                    });
                                                   }
-                                                },
-                                                text: languages[choosenLanguage]['text_confirm'],
-                                              )
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                )
-                              : (getStartOtp == true && driverReq.isNotEmpty)
-                                  ? Positioned(
-                                      top: 0,
-                                      child: Container(
-                                        height: media.height * 1,
-                                        width: media.width * 1,
-                                        padding: EdgeInsets.fromLTRB(
-                                            media.width * 0.1,
-                                            MediaQuery.of(context).padding.top +
-                                                media.width * 0.05,
-                                            media.width * 0.1,
-                                            media.width * 0.05),
-                                        color: page,
-                                        child: Column(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.start,
-                                          children: [
-                                            SizedBox(
-                                              width: media.width * 0.8,
-                                              child: Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment.end,
-                                                children: [
-                                                  InkWell(
-                                                    onTap: () {
+                                                }
+                                              } else {
+                                                if (shipLoadImage == null) {
+                                                  setState(() {});
+                                                } else {
+                                                  setState(() {
+                                                    _errorOtp = false;
+                                                    beforeImageUploadError =
+                                                        '';
+                                                    _isLoading = true;
+                                                  });
+                                                  var upload =
+                                                      await uploadLoadingImage(
+                                                          shipLoadImage);
+                                                  if (upload == 'success') {
+                                                    var val =
+                                                        await tripStartDispatcher();
+                                                    if (val == 'logout') {
+                                                      navigateLogout();
+                                                    } else if (val !=
+                                                        'success') {
                                                       setState(() {
+                                                        _errorOtp = true;
+                                                        _isLoading = false;
+                                                      });
+                                                    } else {
+                                                      setState(() {
+                                                        _isLoading = false;
                                                         getStartOtp = false;
                                                       });
-                                                    },
-                                                    child: Container(
-                                                      height:
-                                                          media.height * 0.05,
-                                                      width:
-                                                          media.height * 0.05,
-                                                      decoration: BoxDecoration(
-                                                        color: page,
-                                                        shape: BoxShape.circle,
-                                                      ),
-                                                      child: Icon(Icons.cancel,
-                                                          color: buttonColor),
-                                                    ),
-                                                  ),
-                                                ],
+                                                    }
+                                                  } else if (upload ==
+                                                      'logout') {
+                                                    navigateLogout();
+                                                  } else {
+                                                    setState(() {
+                                                      beforeImageUploadError =
+                                                          languages[
+                                                                  choosenLanguage]
+                                                              [
+                                                              'text_somethingwentwrong'];
+                                                      _isLoading = false;
+                                                    });
+                                                  }
+                                                }
+                                              }
+                                            },
+                                            text: languages[choosenLanguage]
+                                                ['text_confirm'],
+                                          )
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                : Container(),
+                    
+                        //shipment unload image
+                        (unloadImage == true)
+                            ? Positioned(
+                                child: Container(
+                                height: media.height,
+                                width: media.width * 1,
+                                color: page,
+                                padding: EdgeInsets.fromLTRB(
+                                    media.width * 0.05,
+                                    MediaQuery.of(context).padding.top +
+                                        media.width * 0.05,
+                                    media.width * 0.05,
+                                    media.width * 0.05),
+                                child: Column(
+                                  children: [
+                                    SizedBox(
+                                      width: media.width * 0.8,
+                                      child: Stack(
+                                        children: [
+                                          Container(
+                                              padding: EdgeInsets.only(
+                                                  left: media.width * 0.05,
+                                                  right: media.width * 0.05),
+                                              alignment: Alignment.center,
+                                              // color:Colors.red,
+                                              height: media.width * 0.15,
+                                              width: media.width * 0.9,
+                                              child: Text(
+                                                languages[choosenLanguage]
+                                                    ['text_unload_title'],
+                                                style: GoogleFonts.notoSans(
+                                                    color: textColor,
+                                                    fontSize: media.width *
+                                                        eighteen),
+                                                maxLines: 1,
+                                                textAlign: TextAlign.center,
+                                              )),
+                                          Positioned(
+                                            right: 0,
+                                            top: media.width * 0.025,
+                                            child: InkWell(
+                                              onTap: () {
+                                                setState(() {
+                                                  unloadImage = false;
+                                                });
+                                              },
+                                              child: Container(
+                                                height: media.width * 0.1,
+                                                width: media.width * 0.1,
+                                                decoration: BoxDecoration(
+                                                  color: page,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: Icon(Icons.cancel,
+                                                    color: buttonColor),
                                               ),
                                             ),
-                                            SizedBox(
-                                                height: media.width * 0.025),
-                                            Expanded(
-                                              child: SingleChildScrollView(
-                                                child: Column(
-                                                  children: [
-                                                    (driverReq['show_otp_feature'] ==
-                                                            true)
-                                                        ? Column(children: [
-                                                            Text(
-                                                              languages[
-                                                                      choosenLanguage]
-                                                                  [
-                                                                  'text_driver_otp'],
-                                                              style: GoogleFonts.notoSans(
-                                                                  fontSize: media
-                                                                          .width *
-                                                                      eighteen,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .bold,
-                                                                  color:
-                                                                      textColor),
-                                                            ),
-                                                            SizedBox(
-                                                                height: media
-                                                                        .width *
-                                                                    0.05),
-                                                            Text(
-                                                              languages[
-                                                                      choosenLanguage]
-                                                                  [
-                                                                  'text_enterdriverotp'],
-                                                              style: GoogleFonts
-                                                                  .notoSans(
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      height: media.width * 0.05,
+                                    ),
+                                    Expanded(
+                                      child: SingleChildScrollView(
+                                        child: Column(
+                                          children: [
+                                            Container(
+                                              height: media.width * 0.5,
+                                              width: media.width * 0.5,
+                                              decoration: BoxDecoration(
+                                                border: Border.all(
+                                                    color: borderLines,
+                                                    width: 1.1),
+                                              ),
+                                              child: (shipUnloadImage == null)
+                                                  ? InkWell(
+                                                      onTap: () {
+                                                        pickImageFromCamera(
+                                                            2);
+                                                      },
+                                                      child: Center(
+                                                        child: Text(
+                                                            languages[choosenLanguage]
+                                                                [
+                                                                'text_add_unloadImage'],
+                                                            style: GoogleFonts.notoSans(
                                                                 fontSize: media
                                                                         .width *
                                                                     twelve,
-                                                                color: textColor
-                                                                    .withOpacity(
-                                                                        0.7),
-                                                              ),
-                                                              textAlign:
-                                                                  TextAlign
-                                                                      .center,
-                                                            ),
-                                                            SizedBox(
-                                                              height:
-                                                                  media.width *
-                                                                      0.05,
-                                                            ),
-                                                            Row(
-                                                              mainAxisAlignment:
-                                                                  MainAxisAlignment
-                                                                      .spaceAround,
-                                                              children: [
-                                                                Container(
-                                                                  alignment:
-                                                                      Alignment
-                                                                          .center,
-                                                                  width: media
-                                                                          .width *
-                                                                      0.12,
-                                                                  color: page,
-                                                                  child:
-                                                                      TextFormField(
-                                                                    onChanged:
-                                                                        (val) {
-                                                                      if (val.length ==
-                                                                          1) {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp1 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .nextFocus();
-                                                                        });
-                                                                      }
-                                                                    },
-                                                                    style: GoogleFonts.notoSans(
-                                                                        color:
-                                                                            textColor,
-                                                                        fontSize:
-                                                                            media.width *
-                                                                                sixteen),
-                                                                    keyboardType:
-                                                                        TextInputType
-                                                                            .number,
-                                                                    maxLength:
-                                                                        1,
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .center,
-                                                                    decoration: InputDecoration(
-                                                                        counterText:
-                                                                            '',
-                                                                        border: UnderlineInputBorder(
-                                                                            borderSide: BorderSide(
-                                                                                color: textColor,
-                                                                                width: 1.5,
-                                                                                style: BorderStyle.solid))),
-                                                                  ),
-                                                                ),
-                                                                Container(
-                                                                  alignment:
-                                                                      Alignment
-                                                                          .center,
-                                                                  width: media
-                                                                          .width *
-                                                                      0.12,
-                                                                  color: page,
-                                                                  child:
-                                                                      TextFormField(
-                                                                    onChanged:
-                                                                        (val) {
-                                                                      if (val.length ==
-                                                                          1) {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp2 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .nextFocus();
-                                                                        });
-                                                                      } else {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp2 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .previousFocus();
-                                                                        });
-                                                                      }
-                                                                    },
-                                                                    style: GoogleFonts.notoSans(
-                                                                        color:
-                                                                            textColor,
-                                                                        fontSize:
-                                                                            media.width *
-                                                                                sixteen),
-                                                                    keyboardType:
-                                                                        TextInputType
-                                                                            .number,
-                                                                    maxLength:
-                                                                        1,
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .center,
-                                                                    decoration: InputDecoration(
-                                                                        counterText:
-                                                                            '',
-                                                                        border: UnderlineInputBorder(
-                                                                            borderSide: BorderSide(
-                                                                                color: textColor,
-                                                                                width: 1.5,
-                                                                                style: BorderStyle.solid))),
-                                                                  ),
-                                                                ),
-                                                                Container(
-                                                                  alignment:
-                                                                      Alignment
-                                                                          .center,
-                                                                  width: media
-                                                                          .width *
-                                                                      0.12,
-                                                                  color: page,
-                                                                  child:
-                                                                      TextFormField(
-                                                                    onChanged:
-                                                                        (val) {
-                                                                      if (val.length ==
-                                                                          1) {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp3 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .nextFocus();
-                                                                        });
-                                                                      } else {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp3 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .previousFocus();
-                                                                        });
-                                                                      }
-                                                                    },
-                                                                    style: GoogleFonts.notoSans(
-                                                                        color:
-                                                                            textColor,
-                                                                        fontSize:
-                                                                            media.width *
-                                                                                sixteen),
-                                                                    keyboardType:
-                                                                        TextInputType
-                                                                            .number,
-                                                                    maxLength:
-                                                                        1,
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .center,
-                                                                    decoration: InputDecoration(
-                                                                        counterText:
-                                                                            '',
-                                                                        border: UnderlineInputBorder(
-                                                                            borderSide: BorderSide(
-                                                                                color: textColor,
-                                                                                width: 1.5,
-                                                                                style: BorderStyle.solid))),
-                                                                  ),
-                                                                ),
-                                                                Container(
-                                                                  alignment:
-                                                                      Alignment
-                                                                          .center,
-                                                                  width: media
-                                                                          .width *
-                                                                      0.12,
-                                                                  color: page,
-                                                                  child:
-                                                                      TextFormField(
-                                                                    onChanged:
-                                                                        (val) {
-                                                                      if (val.length ==
-                                                                          1) {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp4 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .nextFocus();
-                                                                        });
-                                                                      } else {
-                                                                        setState(
-                                                                            () {
-                                                                          _otp4 =
-                                                                              val;
-                                                                          driverOtp = _otp1 +
-                                                                              _otp2 +
-                                                                              _otp3 +
-                                                                              _otp4;
-                                                                          FocusScope.of(context)
-                                                                              .previousFocus();
-                                                                        });
-                                                                      }
-                                                                    },
-                                                                    style: GoogleFonts.notoSans(
-                                                                        color:
-                                                                            textColor,
-                                                                        fontSize:
-                                                                            media.width *
-                                                                                sixteen),
-                                                                    keyboardType:
-                                                                        TextInputType
-                                                                            .number,
-                                                                    maxLength:
-                                                                        1,
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .center,
-                                                                    decoration: InputDecoration(
-                                                                        counterText:
-                                                                            '',
-                                                                        border: UnderlineInputBorder(
-                                                                            borderSide: BorderSide(
-                                                                                color: textColor,
-                                                                                width: 1.5,
-                                                                                style: BorderStyle.solid))),
-                                                                  ),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                            SizedBox(
-                                                              height:
-                                                                  media.width *
-                                                                      0.04,
-                                                            ),
-                                                            (_errorOtp == true)
-                                                                ? Text(
-                                                                    languages[
-                                                                            choosenLanguage]
-                                                                        [
-                                                                        'text_error_trip_otp'],
-                                                                    style: GoogleFonts.notoSans(
-                                                                        color: Colors
-                                                                            .red,
-                                                                        fontSize:
-                                                                            media.width *
-                                                                                twelve),
-                                                                  )
-                                                                : Container(),
-                                                            SizedBox(
-                                                                height: media
-                                                                        .width *
-                                                                    0.02),
-                                                          ])
-                                                        : Container(),
-                                                    SizedBox(
-                                                      width: media.width * 0.8,
-                                                      child: Text(
-                                                        languages[
-                                                                choosenLanguage]
-                                                            [
-                                                            'text_shipment_title'],
-                                                        style: GoogleFonts
-                                                            .notoSans(
-                                                          fontSize:
-                                                              media.width *
-                                                                  eighteen,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: textColor,
-                                                        ),
-                                                        textAlign:
-                                                            TextAlign.center,
+                                                                color:
+                                                                    hintColor),
+                                                            textAlign:
+                                                                TextAlign
+                                                                    .center),
                                                       ),
-                                                    ),
-                                                    SizedBox(
-                                                        height:
-                                                            media.width * 0.02),
-                                                    Container(
+                                                    )
+                                                  : InkWell(
+                                                      onTap: () {
+                                                        pickImageFromCamera(
+                                                            2);
+                                                      },
+                                                      child: Container(
                                                         height:
                                                             media.width * 0.5,
                                                         width:
                                                             media.width * 0.5,
                                                         decoration:
                                                             BoxDecoration(
-                                                          border: Border.all(
-                                                              color:
-                                                                  borderLines,
-                                                              width: 1.1),
-                                                        ),
-                                                        child:
-                                                            (shipLoadImage ==
-                                                                    null)
-                                                                ? InkWell(
-                                                                    onTap: () {
-                                                                      pickImageFromCamera(
-                                                                          1);
-                                                                    },
-                                                                    child:
-                                                                        Center(
-                                                                      child: Text(
-                                                                          languages[choosenLanguage]
-                                                                              [
-                                                                              'text_add_shipmentimage'],
-                                                                          style: GoogleFonts.notoSans(
-                                                                              fontSize: media.width *
-                                                                                  twelve,
-                                                                              color:
-                                                                                  hintColor),
-                                                                          textAlign:
-                                                                              TextAlign.center),
-                                                                    ),
-                                                                  )
-                                                                : InkWell(
-                                                                    onTap: () {
-                                                                      pickImageFromCamera(
-                                                                          1);
-                                                                    },
-                                                                    child:
-                                                                        Container(
-                                                                      height:
-                                                                          media.width *
-                                                                              0.5,
-                                                                      width: media
-                                                                              .width *
-                                                                          0.5,
-                                                                      decoration: BoxDecoration(
-                                                                          image: DecorationImage(
-                                                                              image: FileImage(File(shipLoadImage)),
-                                                                              fit: BoxFit.contain,
-                                                                              colorFilter: ColorFilter.mode(Colors.white.withOpacity(0.5), BlendMode.dstATop))),
-                                                                      child: Center(
-                                                                          child: Text(
-                                                                              languages[choosenLanguage]['text_edit_shipmentimage'],
-                                                                              style: GoogleFonts.notoSans(fontSize: media.width * twelve, color: textColor),
-                                                                              textAlign: TextAlign.center)),
-                                                                    ),
-                                                                  )),
-                                                    SizedBox(
-                                                      height:
-                                                          media.width * 0.05,
-                                                    ),
-                                                    (beforeImageUploadError !=
-                                                            '')
-                                                        ? SizedBox(
-                                                            width: media.width *
-                                                                0.9,
+                    
+                                                                // color: Colors.transparent.withOpacity(0.4),
+                                                                image: DecorationImage(
+                                                                    image: FileImage(
+                                                                        File(
+                                                                            shipUnloadImage)),
+                                                                    fit: BoxFit
+                                                                        .contain,
+                                                                    colorFilter: ColorFilter.mode(
+                                                                        Colors
+                                                                            .white
+                                                                            .withOpacity(0.5),
+                                                                        BlendMode.dstATop))),
+                                                        child: Center(
                                                             child: Text(
-                                                                beforeImageUploadError,
+                                                                languages[choosenLanguage]
+                                                                    [
+                                                                    'text_edit_unloadimage'],
                                                                 style: GoogleFonts.notoSans(
-                                                                    fontSize: media
-                                                                            .width *
-                                                                        sixteen,
-                                                                    color: Colors
-                                                                        .red),
+                                                                    fontSize:
+                                                                        media.width *
+                                                                            twelve,
+                                                                    color:
+                                                                        textColor),
                                                                 textAlign:
                                                                     TextAlign
-                                                                        .center),
-                                                          )
-                                                        : Container()
-                                                  ],
-                                                ),
-                                              ),
+                                                                        .center)),
+                                                      ),
+                                                    ),
                                             ),
                                             SizedBox(
-                                                height: media.width * 0.02),
-                                            Button(
-                                              onTap: () async {
-                                                if (driverReq[
-                                                        'show_otp_feature'] ==
-                                                    true) {
-                                                  if (driverOtp.length != 4 ||
-                                                      shipLoadImage == null) {
-                                                    setState(() {});
-                                                  } else {
-                                                    setState(() {
-                                                      _errorOtp = false;
-                                                      beforeImageUploadError =
-                                                          '';
-                                                      _isLoading = true;
-                                                    });
-                                                    var upload =
-                                                        await uploadLoadingImage(
-                                                            shipLoadImage);
-                                                    if (upload == 'success') {
-                                                      var val =
-                                                          await tripStart();
-                                                      if (val == 'logout') {
-                                                        navigateLogout();
-                                                      } else if (val !=
-                                                          'success') {
-                                                        setState(() {
-                                                          _errorOtp = true;
-                                                          _isLoading = false;
-                                                        });
-                                                      } else {
-                                                        setState(() {
-                                                          _isLoading = false;
-                                                          getStartOtp = false;
-                                                        });
-                                                      }
-                                                    } else if (upload ==
-                                                        'logout') {
-                                                      navigateLogout();
-                                                    } else {
-                                                      setState(() {
-                                                        beforeImageUploadError =
-                                                            languages[
-                                                                    choosenLanguage]
-                                                                [
-                                                                'text_somethingwentwrong'];
-                                                        _isLoading = false;
-                                                      });
-                                                    }
-                                                  }
-                                                } else {
-                                                  if (shipLoadImage == null) {
-                                                    setState(() {});
-                                                  } else {
-                                                    setState(() {
-                                                      _errorOtp = false;
-                                                      beforeImageUploadError =
-                                                          '';
-                                                      _isLoading = true;
-                                                    });
-                                                    var upload =
-                                                        await uploadLoadingImage(
-                                                            shipLoadImage);
-                                                    if (upload == 'success') {
-                                                      var val =
-                                                          await tripStartDispatcher();
-                                                      if (val == 'logout') {
-                                                        navigateLogout();
-                                                      } else if (val !=
-                                                          'success') {
-                                                        setState(() {
-                                                          _errorOtp = true;
-                                                          _isLoading = false;
-                                                        });
-                                                      } else {
-                                                        setState(() {
-                                                          _isLoading = false;
-                                                          getStartOtp = false;
-                                                        });
-                                                      }
-                                                    } else if (upload ==
-                                                        'logout') {
-                                                      navigateLogout();
-                                                    } else {
-                                                      setState(() {
-                                                        beforeImageUploadError =
-                                                            languages[
-                                                                    choosenLanguage]
-                                                                [
-                                                                'text_somethingwentwrong'];
-                                                        _isLoading = false;
-                                                      });
-                                                    }
-                                                  }
-                                                }
-                                              },
-                                              text: languages[choosenLanguage]
-                                                  ['text_confirm'],
-                                            )
+                                                height: media.width * 0.05),
+                                            (afterImageUploadError != '')
+                                                ? SizedBox(
+                                                    width: media.width * 0.9,
+                                                    child: Text(
+                                                        afterImageUploadError,
+                                                        style: GoogleFonts
+                                                            .notoSans(
+                                                                fontSize: media
+                                                                        .width *
+                                                                    sixteen,
+                                                                color: Colors
+                                                                    .red),
+                                                        textAlign:
+                                                            TextAlign.center),
+                                                  )
+                                                : Container()
                                           ],
                                         ),
                                       ),
+                                    ),
+                                    (shipUnloadImage != null)
+                                        ? Button(
+                                            onTap: () async {
+                                              setState(() {
+                                                _isLoading = true;
+                                                afterImageUploadError = '';
+                                              });
+                                              var val =
+                                                  await uploadUnloadingImage(
+                                                      shipUnloadImage);
+                                              if (val == 'success') {
+                                                if (driverReq[
+                                                            'enable_digital_signature']
+                                                        .toString() ==
+                                                    '1') {
+                                                  navigate();
+                                                } else {
+                                                  var val = await endTrip();
+                                                  if (val == 'logout') {
+                                                    navigateLogout();
+                                                  }
+                                                }
+                                              } else if (val == 'logout') {
+                                                navigateLogout();
+                                              } else {
+                                                setState(() {
+                                                  afterImageUploadError =
+                                                      languages[
+                                                              choosenLanguage]
+                                                          [
+                                                          'text_somethingwentwrong'];
+                                                });
+                                              }
+                                              setState(() {
+                                                _isLoading = false;
+                                              });
+                                            },
+                                            text: 'Upload')
+                                        : Container()
+                                  ],
+                                ),
+                              ))
+                            : Container(),
+                    
+                        //permission denied popup
+                        (_permission != '')
+                            ? Positioned(
+                                child: Container(
+                                height: media.height * 1,
+                                width: media.width * 1,
+                                color: Colors.transparent.withOpacity(0.6),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: media.width * 0.9,
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
+                                        children: [
+                                          InkWell(
+                                            onTap: () {
+                                              setState(() {
+                                                _permission = '';
+                                              });
+                                            },
+                                            child: Container(
+                                              height: media.width * 0.1,
+                                              width: media.width * 0.1,
+                                              decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: page),
+                                              child: Icon(
+                                                  Icons.cancel_outlined,
+                                                  color: textColor),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      height: media.width * 0.05,
+                                    ),
+                                    Container(
+                                      padding:
+                                          EdgeInsets.all(media.width * 0.05),
+                                      width: media.width * 0.9,
+                                      decoration: BoxDecoration(
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          color: page,
+                                          boxShadow: [
+                                            BoxShadow(
+                                                blurRadius: 2.0,
+                                                spreadRadius: 2.0,
+                                                color: Colors.black
+                                                    .withOpacity(0.2))
+                                          ]),
+                                      child: Column(
+                                        children: [
+                                          SizedBox(
+                                              width: media.width * 0.8,
+                                              child: Text(
+                                                languages[choosenLanguage][
+                                                    'text_open_camera_setting'],
+                                                style: GoogleFonts.notoSans(
+                                                    fontSize:
+                                                        media.width * sixteen,
+                                                    color: textColor,
+                                                    fontWeight:
+                                                        FontWeight.w600),
+                                              )),
+                                          SizedBox(
+                                              height: media.width * 0.05),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment
+                                                    .spaceBetween,
+                                            children: [
+                                              InkWell(
+                                                  onTap: () async {
+                                                    await perm
+                                                        .openAppSettings();
+                                                  },
+                                                  child: Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_open_settings'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            color:
+                                                                buttonColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600),
+                                                  )),
+                                              InkWell(
+                                                  onTap: () async {
+                                                    // pickImageFromCamera();
+                                                    setState(() {
+                                                      _permission = '';
+                                                    });
+                                                  },
+                                                  child: Text(
+                                                    languages[choosenLanguage]
+                                                        ['text_done'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    sixteen,
+                                                            color:
+                                                                buttonColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600),
+                                                  ))
+                                            ],
+                                          )
+                                        ],
+                                      ),
                                     )
-                                  : Container(),
-
-                          //shipment unload image
-                          (unloadImage == true)
-                              ? Positioned(
-                                  child: Container(
-                                  height: media.height,
+                                  ],
+                                ),
+                              ))
+                            : Container(),
+                    
+                        //popup for cancel request
+                        (cancelRequest == true && driverReq.isNotEmpty)
+                            ? Positioned(
+                                child: Container(
+                                height: media.height * 1,
+                                width: media.width * 1,
+                                color: Colors.transparent.withOpacity(0.6),
+                                alignment: Alignment.center,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      padding:
+                                          EdgeInsets.all(media.width * 0.05),
+                                      width: media.width * 0.9,
+                                      decoration: BoxDecoration(
+                                          color: page,
+                                          borderRadius:
+                                              BorderRadius.circular(12)),
+                                      child: Column(children: [
+                                        //CAMBIAR IDIOMA
+                                        Text(
+                                          'Cancelar llamada',
+                                          style: GoogleFonts.montserrat(
+                                              color: newRedColor,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                        Column(
+                                          children: cancelReasonsList
+                                              .asMap()
+                                              .map((i, value) {
+                                                return MapEntry(
+                                                    i,
+                                                    InkWell(
+                                                      onTap: () {
+                                                        setState(() {
+                                                          _cancelReason =
+                                                              cancelReasonsList[
+                                                                      i]
+                                                                  ['reason'];
+                                                        });
+                                                      },
+                                                      child: Container(
+                                                        padding:
+                                                            EdgeInsets.all(
+                                                                media.width *
+                                                                    0.01),
+                                                        child: Row(
+                                                          children: [
+                                                            Container(
+                                                              height: media
+                                                                      .height *
+                                                                  0.05,
+                                                              width: media
+                                                                      .width *
+                                                                  0.05,
+                                                              decoration: BoxDecoration(
+                                                                  shape: BoxShape
+                                                                      .circle,
+                                                                  border: Border.all(
+                                                                      color:
+                                                                          newRedColor,
+                                                                      width:
+                                                                          1.2)),
+                                                              alignment:
+                                                                  Alignment
+                                                                      .center,
+                                                              child: (_cancelReason ==
+                                                                      cancelReasonsList[i]
+                                                                          [
+                                                                          'reason'])
+                                                                  ? Container(
+                                                                      height: media.width *
+                                                                          0.03,
+                                                                      width: media.width *
+                                                                          0.03,
+                                                                      decoration:
+                                                                          BoxDecoration(
+                                                                        shape:
+                                                                            BoxShape.circle,
+                                                                        color:
+                                                                            newRedColor,
+                                                                      ),
+                                                                    )
+                                                                  : Container(),
+                                                            ),
+                                                            SizedBox(
+                                                              width: media
+                                                                      .width *
+                                                                  0.05,
+                                                            ),
+                                                            SizedBox(
+                                                              width: media
+                                                                      .width *
+                                                                  0.65,
+                                                              child: MyText(
+                                                                fontweight:
+                                                                    FontWeight
+                                                                        .bold,
+                                                                text: cancelReasonsList[
+                                                                        i][
+                                                                    'reason'],
+                                                                size: media
+                                                                        .width *
+                                                                    twelve,
+                                                              ),
+                                                            )
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ));
+                                              })
+                                              .values
+                                              .toList(),
+                                        ),
+                                        InkWell(
+                                          onTap: () {
+                                            setState(() {
+                                              _cancelReason = 'others';
+                                            });
+                                          },
+                                          child: Container(
+                                            padding: EdgeInsets.all(
+                                                media.width * 0.01),
+                                            child: Row(
+                                              children: [
+                                                Container(
+                                                  height: media.height * 0.05,
+                                                  width: media.width * 0.05,
+                                                  decoration: BoxDecoration(
+                                                      shape: BoxShape.circle,
+                                                      border: Border.all(
+                                                          color: newRedColor,
+                                                          width: 1.2)),
+                                                  alignment: Alignment.center,
+                                                  child: (_cancelReason ==
+                                                          'others')
+                                                      ? Container(
+                                                          height:
+                                                              media.width *
+                                                                  0.03,
+                                                          width: media.width *
+                                                              0.03,
+                                                          decoration:
+                                                              BoxDecoration(
+                                                            shape: BoxShape
+                                                                .circle,
+                                                            color:
+                                                                newRedColor,
+                                                          ),
+                                                        )
+                                                      : Container(),
+                                                ),
+                                                SizedBox(
+                                                  width: media.width * 0.05,
+                                                ),
+                                                MyText(
+                                                  fontweight: FontWeight.bold,
+                                                  text: languages[
+                                                          choosenLanguage]
+                                                      ['text_others'],
+                                                  size: media.width * twelve,
+                                                )
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                    
+                                        (_cancelReason == 'others')
+                                            ? Container(
+                                                margin: EdgeInsets.fromLTRB(
+                                                    0,
+                                                    media.width * 0.025,
+                                                    0,
+                                                    media.width * 0.025),
+                                                padding: EdgeInsets.all(
+                                                    media.width * 0.05),
+                                                width: media.width * 0.9,
+                                                decoration: BoxDecoration(
+                                                    border: Border.all(
+                                                        color: borderLines,
+                                                        width: 1.2),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            12)),
+                                                child: TextField(
+                                                  decoration: InputDecoration(
+                                                      border:
+                                                          InputBorder.none,
+                                                      hintText: languages[
+                                                              choosenLanguage]
+                                                          [
+                                                          'text_cancelRideReason'],
+                                                      hintStyle: GoogleFonts
+                                                          .notoSans(
+                                                              fontSize: media
+                                                                      .width *
+                                                                  twelve)),
+                                                  maxLines: 4,
+                                                  minLines: 2,
+                                                  onChanged: (val) {
+                                                    setState(() {
+                                                      cancelReasonText = val;
+                                                    });
+                                                  },
+                                                ),
+                                              )
+                                            : Container(),
+                                        (_cancellingError != '')
+                                            ? Container(
+                                                padding: EdgeInsets.only(
+                                                    top: media.width * 0.02,
+                                                    bottom: media.width *
+                                                        0.02),
+                                                width: media.width * 0.9,
+                                                child: Text(_cancellingError,
+                                                    style: GoogleFonts
+                                                        .notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    twelve,
+                                                            color:
+                                                                Colors.red)))
+                                            : Container(),
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Button(
+                                                height: media.height * 0.045,
+                                                color: Colors.grey
+                                                    .withOpacity(0.5),
+                                                textcolor: Colors.white,
+                                                borcolor: Colors.grey
+                                                    .withOpacity(0.5),
+                                                width: media.width * 0.39,
+                                                onTap: () async {
+                                                  setState(() {
+                                                    cancelRequest = false;
+                                                  });
+                                                },
+                                                text: 'Atras'),
+                                            Button(
+                                                height: media.height * 0.045,
+                                                color: newRedColor,
+                                                textcolor: Colors.white,
+                                                borcolor: newRedColor,
+                                                width: media.width * 0.39,
+                                                onTap: () async {
+                                                  setState(() {
+                                                    _isLoading = true;
+                                                  });
+                                                  if (_cancelReason != '') {
+                                                    if (_cancelReason ==
+                                                        'others') {
+                                                      if (cancelReasonText !=
+                                                              '' &&
+                                                          cancelReasonText
+                                                              .isNotEmpty) {
+                                                        _cancellingError = '';
+                                                        var val =
+                                                            await cancelRequestDriver(
+                                                                cancelReasonText);
+                                                        if (val == 'logout') {
+                                                          navigateLogout();
+                                                        }
+                                                        setState(() {
+                                                          cancelRequest =
+                                                              false;
+                                                        });
+                                                      } else {
+                                                        setState(() {
+                                                          _cancellingError =
+                                                              languages[
+                                                                      choosenLanguage]
+                                                                  [
+                                                                  'text_add_cancel_reason'];
+                                                        });
+                                                      }
+                                                    } else {
+                                                      var val =
+                                                          await cancelRequestDriver(
+                                                              _cancelReason);
+                                                      if (val == 'logout') {
+                                                        navigateLogout();
+                                                      }
+                                                      setState(() {
+                                                        cancelRequest = false;
+                                                      });
+                                                    }
+                                                  }
+                                                  setState(() {
+                                                    _isLoading = false;
+                                                  });
+                                                  SharedPreferences prefs =
+                                                      await SharedPreferences
+                                                          .getInstance();
+                                                  setState(() {
+                                                    dropProvider
+                                                            .mostrardDibujadoDestino =
+                                                        false;
+                                                    prefs.remove(
+                                                        'mostrardDibujadoDestino');
+                                                    prefs.remove(
+                                                        'puntosRutaDestino');
+                                                  });
+                                                },
+                                                text: 'Confirmar')
+                                          ],
+                                        )
+                                      ]),
+                                    ),
+                                  ],
+                                ),
+                              ))
+                            : Container(),
+                    
+                        //loader
+                        (state == '')
+                            ? const Positioned(top: 0, child: Loading())
+                            : Container(),
+                    
+                        //logout popup
+                        (logout == true)
+                            ? Positioned(
+                                top: 0,
+                                child: Container(
+                                  height: media.height * 1,
                                   width: media.width * 1,
-                                  color: page,
-                                  padding: EdgeInsets.fromLTRB(
-                                      media.width * 0.05,
-                                      MediaQuery.of(context).padding.top +
-                                          media.width * 0.05,
-                                      media.width * 0.05,
-                                      media.width * 0.05),
+                                  color: Colors.transparent.withOpacity(0.6),
                                   child: Column(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.center,
                                     children: [
                                       SizedBox(
-                                        width: media.width * 0.8,
-                                        child: Stack(
+                                        width: media.width * 0.9,
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
                                           children: [
                                             Container(
-                                                padding: EdgeInsets.only(
-                                                    left: media.width * 0.05,
-                                                    right: media.width * 0.05),
-                                                alignment: Alignment.center,
-                                                // color:Colors.red,
-                                                height: media.width * 0.15,
-                                                width: media.width * 0.9,
-                                                child: Text(
-                                                  languages[choosenLanguage]
-                                                      ['text_unload_title'],
-                                                  style: GoogleFonts.notoSans(
-                                                      color: textColor,
-                                                      fontSize: media.width *
-                                                          eighteen),
-                                                  maxLines: 1,
-                                                  textAlign: TextAlign.center,
-                                                )),
-                                            Positioned(
-                                              right: 0,
-                                              top: media.width * 0.025,
-                                              child: InkWell(
+                                                height: media.height * 0.1,
+                                                width: media.width * 0.1,
+                                                decoration: BoxDecoration(
+                                                    shape: BoxShape.circle,
+                                                    color: page),
+                                                child: InkWell(
+                                                    onTap: () {
+                                                      setState(() {
+                                                        logout = false;
+                                                      });
+                                                    },
+                                                    child: const Icon(Icons
+                                                        .cancel_outlined))),
+                                          ],
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: EdgeInsets.all(
+                                            media.width * 0.05),
+                                        width: media.width * 0.9,
+                                        decoration: BoxDecoration(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            color: page),
+                                        child: Column(
+                                          children: [
+                                            Text(
+                                              languages[choosenLanguage]
+                                                  ['text_confirmlogout'],
+                                              textAlign: TextAlign.center,
+                                              style: GoogleFonts.notoSans(
+                                                  fontSize:
+                                                      media.width * sixteen,
+                                                  color: textColor,
+                                                  fontWeight:
+                                                      FontWeight.w600),
+                                            ),
+                                            SizedBox(
+                                              height: media.width * 0.05,
+                                            ),
+                                            Button(
+                                                onTap: () async {
+                                                  if (userDetails['active'] ==
+                                                      true) {
+                                                    var val =
+                                                        await driverStatus();
+                                                    if (val == 'logout') {
+                                                      navigateLogout();
+                                                    }
+                                                  }
+                                                  setState(() {
+                                                    _isLoading = true;
+                                                    logout = false;
+                                                  });
+                                                  var result =
+                                                      await userLogout();
+                                                  if (result == 'success') {
+                                                    setState(() {
+                                                      navigateLogout();
+                                                      userDetails.clear();
+                                                    });
+                                                  } else if (result ==
+                                                      'logout') {
+                                                    navigateLogout();
+                                                  } else {
+                                                    setState(() {
+                                                      logout = true;
+                                                    });
+                                                  }
+                                                },
+                                                text:
+                                                    languages[choosenLanguage]
+                                                        ['text_confirm'])
+                                          ],
+                                        ),
+                                      )
+                                    ],
+                                  ),
+                                ))
+                            : Container(),
+                    
+                        //waiting time popup
+                        (_showWaitingInfo == true)
+                            ? Positioned(
+                                top: 0,
+                                child: Container(
+                                  height: media.height * 1,
+                                  width: media.width * 1,
+                                  color: Colors.transparent.withOpacity(0.6),
+                                  child: Column(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: media.width * 0.9,
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
+                                          children: [
+                                            Container(
+                                                height: media.height * 0.1,
+                                                width: media.width * 0.1,
+                                                decoration: BoxDecoration(
+                                                    shape: BoxShape.circle,
+                                                    color: page),
+                                                child: InkWell(
+                                                    onTap: () {
+                                                      setState(() {
+                                                        _showWaitingInfo =
+                                                            false;
+                                                      });
+                                                    },
+                                                    child: const Icon(Icons
+                                                        .cancel_outlined))),
+                                          ],
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: EdgeInsets.all(
+                                            media.width * 0.05),
+                                        width: media.width * 0.9,
+                                        decoration: BoxDecoration(
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            color: page),
+                                        child: Column(
+                                          children: [
+                                            Text(
+                                              languages[choosenLanguage]
+                                                  ['text_waiting_time_1'],
+                                              textAlign: TextAlign.center,
+                                              style: GoogleFonts.notoSans(
+                                                  fontSize:
+                                                      media.width * sixteen,
+                                                  color: textColor,
+                                                  fontWeight:
+                                                      FontWeight.w600),
+                                            ),
+                                            SizedBox(
+                                              height: media.width * 0.05,
+                                            ),
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment
+                                                      .spaceBetween,
+                                              children: [
+                                                Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_waiting_time_2'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    fourteen,
+                                                            color:
+                                                                textColor)),
+                                                Text(
+                                                    '${driverReq['free_waiting_time_in_mins_before_trip_start']} ${languages[choosenLanguage]['text_mins']}',
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    fourteen,
+                                                            color: textColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600)),
+                                              ],
+                                            ),
+                                            SizedBox(
+                                              height: media.width * 0.05,
+                                            ),
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment
+                                                      .spaceBetween,
+                                              children: [
+                                                Text(
+                                                    languages[choosenLanguage]
+                                                        [
+                                                        'text_waiting_time_3'],
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    fourteen,
+                                                            color:
+                                                                textColor)),
+                                                Text(
+                                                    '${driverReq['free_waiting_time_in_mins_after_trip_start']} ${languages[choosenLanguage]['text_mins']}',
+                                                    style:
+                                                        GoogleFonts.notoSans(
+                                                            fontSize:
+                                                                media.width *
+                                                                    fourteen,
+                                                            color: textColor,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600)),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      )
+                                    ],
+                                  ),
+                                ))
+                            : Container(),
+                    
+                        //no internet
+                        (internet == false)
+                            ? Positioned(
+                                top: 0,
+                                child: NoInternet(
+                                  onTap: () {
+                                    setState(() {
+                                      internetTrue();
+                                      getUserDetails();
+                                    });
+                                  },
+                                ))
+                            : Container(),
+                    
+                        //sos popup
+                        (showSos == true)
+                            ? Positioned(
+                                top: 0,
+                                child: Container(
+                                  height: media.height * 1,
+                                  width: media.width * 1,
+                                  color: Colors.transparent.withOpacity(0.6),
+                                  child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        SizedBox(
+                                          width: media.width * 0.7,
+                                          child: Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.end,
+                                            children: [
+                                              InkWell(
                                                 onTap: () {
                                                   setState(() {
-                                                    unloadImage = false;
+                                                    notifyCompleted = false;
+                                                    showSos = false;
                                                   });
                                                 },
                                                 child: Container(
                                                   height: media.width * 0.1,
                                                   width: media.width * 0.1,
                                                   decoration: BoxDecoration(
-                                                    color: page,
-                                                    shape: BoxShape.circle,
-                                                  ),
-                                                  child: Icon(Icons.cancel,
-                                                      color: buttonColor),
+                                                      shape: BoxShape.circle,
+                                                      color: page),
+                                                  child: const Icon(
+                                                      Icons.cancel_outlined),
                                                 ),
                                               ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        height: media.width * 0.05,
-                                      ),
-                                      Expanded(
-                                        child: SingleChildScrollView(
-                                          child: Column(
-                                            children: [
-                                              Container(
-                                                height: media.width * 0.5,
-                                                width: media.width * 0.5,
-                                                decoration: BoxDecoration(
-                                                  border: Border.all(
-                                                      color: borderLines,
-                                                      width: 1.1),
-                                                ),
-                                                child: (shipUnloadImage == null)
-                                                    ? InkWell(
-                                                        onTap: () {
-                                                          pickImageFromCamera(
-                                                              2);
-                                                        },
-                                                        child: Center(
-                                                          child: Text(
-                                                              languages[choosenLanguage]
-                                                                  [
-                                                                  'text_add_unloadImage'],
-                                                              style: GoogleFonts.notoSans(
-                                                                  fontSize: media
-                                                                          .width *
-                                                                      twelve,
-                                                                  color:
-                                                                      hintColor),
-                                                              textAlign:
-                                                                  TextAlign
-                                                                      .center),
-                                                        ),
-                                                      )
-                                                    : InkWell(
-                                                        onTap: () {
-                                                          pickImageFromCamera(
-                                                              2);
-                                                        },
-                                                        child: Container(
-                                                          height:
-                                                              media.width * 0.5,
-                                                          width:
-                                                              media.width * 0.5,
-                                                          decoration:
-                                                              BoxDecoration(
-
-                                                                  // color: Colors.transparent.withOpacity(0.4),
-                                                                  image: DecorationImage(
-                                                                      image: FileImage(
-                                                                          File(
-                                                                              shipUnloadImage)),
-                                                                      fit: BoxFit
-                                                                          .contain,
-                                                                      colorFilter: ColorFilter.mode(
-                                                                          Colors
-                                                                              .white
-                                                                              .withOpacity(0.5),
-                                                                          BlendMode.dstATop))),
-                                                          child: Center(
-                                                              child: Text(
-                                                                  languages[choosenLanguage]
-                                                                      [
-                                                                      'text_edit_unloadimage'],
-                                                                  style: GoogleFonts.notoSans(
-                                                                      fontSize:
-                                                                          media.width *
-                                                                              twelve,
-                                                                      color:
-                                                                          textColor),
-                                                                  textAlign:
-                                                                      TextAlign
-                                                                          .center)),
-                                                        ),
-                                                      ),
-                                              ),
-                                              SizedBox(
-                                                  height: media.width * 0.05),
-                                              (afterImageUploadError != '')
-                                                  ? SizedBox(
-                                                      width: media.width * 0.9,
-                                                      child: Text(
-                                                          afterImageUploadError,
-                                                          style: GoogleFonts
-                                                              .notoSans(
-                                                                  fontSize: media
-                                                                          .width *
-                                                                      sixteen,
-                                                                  color: Colors
-                                                                      .red),
-                                                          textAlign:
-                                                              TextAlign.center),
-                                                    )
-                                                  : Container()
                                             ],
                                           ),
                                         ),
-                                      ),
-                                      (shipUnloadImage != null)
-                                          ? Button(
-                                              onTap: () async {
-                                                setState(() {
-                                                  _isLoading = true;
-                                                  afterImageUploadError = '';
-                                                });
-                                                var val =
-                                                    await uploadUnloadingImage(
-                                                        shipUnloadImage);
-                                                if (val == 'success') {
-                                                  if (driverReq[
-                                                              'enable_digital_signature']
-                                                          .toString() ==
-                                                      '1') {
-                                                    navigate();
-                                                  } else {
-                                                    var val = await endTrip();
-                                                    if (val == 'logout') {
-                                                      navigateLogout();
-                                                    }
-                                                  }
-                                                } else if (val == 'logout') {
-                                                  navigateLogout();
-                                                } else {
-                                                  setState(() {
-                                                    afterImageUploadError =
-                                                        languages[
-                                                                choosenLanguage]
-                                                            [
-                                                            'text_somethingwentwrong'];
-                                                  });
-                                                }
-                                                setState(() {
-                                                  _isLoading = false;
-                                                });
-                                              },
-                                              text: 'Upload')
-                                          : Container()
-                                    ],
-                                  ),
+                                        SizedBox(
+                                          height: media.width * 0.05,
+                                        ),
+                                        Container(
+                                          padding: EdgeInsets.all(
+                                              media.width * 0.05),
+                                          height: media.height * 0.5,
+                                          width: media.width * 0.7,
+                                          decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              color: page),
+                                          child: SingleChildScrollView(
+                                              physics:
+                                                  const BouncingScrollPhysics(),
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  InkWell(
+                                                    onTap: () async {
+                                                      setState(() {
+                                                        notifyCompleted =
+                                                            false;
+                                                      });
+                                                      var val =
+                                                          await notifyAdmin();
+                                                      if (val == true) {
+                                                        setState(() {
+                                                          notifyCompleted =
+                                                              true;
+                                                        });
+                                                      }
+                                                    },
+                                                    child: Container(
+                                                      padding: EdgeInsets.all(
+                                                          media.width * 0.05),
+                                                      child: Row(
+                                                        mainAxisAlignment:
+                                                            MainAxisAlignment
+                                                                .spaceBetween,
+                                                        children: [
+                                                          Column(
+                                                            crossAxisAlignment:
+                                                                CrossAxisAlignment
+                                                                    .start,
+                                                            children: [
+                                                              Text(
+                                                                languages[
+                                                                        choosenLanguage]
+                                                                    [
+                                                                    'text_notifyadmin'],
+                                                                style: GoogleFonts.notoSans(
+                                                                    fontSize:
+                                                                        media.width *
+                                                                            sixteen,
+                                                                    color:
+                                                                        textColor,
+                                                                    fontWeight:
+                                                                        FontWeight
+                                                                            .w600),
+                                                              ),
+                                                              (notifyCompleted ==
+                                                                      true)
+                                                                  ? Container(
+                                                                      padding:
+                                                                          EdgeInsets.only(top: media.width * 0.01),
+                                                                      child:
+                                                                          Text(
+                                                                        languages[choosenLanguage]
+                                                                            [
+                                                                            'text_notifysuccess'],
+                                                                        style:
+                                                                            GoogleFonts.notoSans(
+                                                                          fontSize:
+                                                                              media.width * twelve,
+                                                                          color:
+                                                                              const Color(0xff319900),
+                                                                        ),
+                                                                      ),
+                                                                    )
+                                                                  : Container()
+                                                            ],
+                                                          ),
+                                                          const Icon(Icons
+                                                              .notification_add)
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  (sosData.isNotEmpty)
+                                                      ? Column(
+                                                          children: sosData
+                                                              .asMap()
+                                                              .map(
+                                                                  (i, value) {
+                                                                return MapEntry(
+                                                                    i,
+                                                                    InkWell(
+                                                                      onTap:
+                                                                          () {
+                                                                        makingPhoneCall(sosData[i]['number'].toString().replaceAll(
+                                                                            ' ',
+                                                                            ''));
+                                                                      },
+                                                                      child:
+                                                                          Container(
+                                                                        padding:
+                                                                            EdgeInsets.all(media.width * 0.05),
+                                                                        child:
+                                                                            Row(
+                                                                          mainAxisAlignment:
+                                                                              MainAxisAlignment.spaceBetween,
+                                                                          children: [
+                                                                            Column(
+                                                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                                                              children: [
+                                                                                SizedBox(
+                                                                                  width: media.width * 0.4,
+                                                                                  child: Text(
+                                                                                    sosData[i]['name'],
+                                                                                    style: GoogleFonts.notoSans(fontSize: media.width * fourteen, color: textColor, fontWeight: FontWeight.w600),
+                                                                                  ),
+                                                                                ),
+                                                                                SizedBox(
+                                                                                  height: media.width * 0.01,
+                                                                                ),
+                                                                                Text(
+                                                                                  sosData[i]['number'],
+                                                                                  style: GoogleFonts.notoSans(
+                                                                                    fontSize: media.width * twelve,
+                                                                                    color: textColor,
+                                                                                  ),
+                                                                                )
+                                                                              ],
+                                                                            ),
+                                                                            const Icon(Icons.call)
+                                                                          ],
+                                                                        ),
+                                                                      ),
+                                                                    ));
+                                                              })
+                                                              .values
+                                                              .toList(),
+                                                        )
+                                                      : Container(
+                                                          width: media.width *
+                                                              0.7,
+                                                          alignment: Alignment
+                                                              .center,
+                                                          child: Text(
+                                                            languages[
+                                                                    choosenLanguage]
+                                                                [
+                                                                'text_noDataFound'],
+                                                            style: GoogleFonts.notoSans(
+                                                                fontSize: media
+                                                                        .width *
+                                                                    eighteen,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                color:
+                                                                    textColor),
+                                                          ),
+                                                        )
+                                                ],
+                                              )),
+                                        )
+                                      ]),
                                 ))
-                              : Container(),
-
-                          //permission denied popup
-                          (_permission != '')
-                              ? Positioned(
-                                  child: Container(
+                            : Container(),
+                    
+                        //choose option for seeing location on map while having multiple stops
+                        (_tripOpenMap == true)
+                            ? Positioned(
+                                top: 0,
+                                child: Container(
                                   height: media.height * 1,
                                   width: media.width * 1,
                                   color: Colors.transparent.withOpacity(0.6),
                                   child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.center,
                                     children: [
                                       SizedBox(
                                         width: media.width * 0.9,
@@ -5668,7 +6606,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                             InkWell(
                                               onTap: () {
                                                 setState(() {
-                                                  _permission = '';
+                                                  _tripOpenMap = false;
                                                 });
                                               },
                                               child: Container(
@@ -5678,8 +6616,9 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                     shape: BoxShape.circle,
                                                     color: page),
                                                 child: Icon(
-                                                    Icons.cancel_outlined,
-                                                    color: textColor),
+                                                  Icons.cancel_outlined,
+                                                  color: textColor,
+                                                ),
                                               ),
                                             ),
                                           ],
@@ -5689,1392 +6628,486 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                         height: media.width * 0.05,
                                       ),
                                       Container(
-                                        padding:
-                                            EdgeInsets.all(media.width * 0.05),
-                                        width: media.width * 0.9,
-                                        decoration: BoxDecoration(
-                                            borderRadius:
-                                                BorderRadius.circular(12),
-                                            color: page,
-                                            boxShadow: [
-                                              BoxShadow(
-                                                  blurRadius: 2.0,
-                                                  spreadRadius: 2.0,
-                                                  color: Colors.black
-                                                      .withOpacity(0.2))
-                                            ]),
-                                        child: Column(
-                                          children: [
-                                            SizedBox(
+                                          width: media.width * 0.9,
+                                          padding: EdgeInsets.fromLTRB(
+                                              media.width * 0.02,
+                                              media.width * 0.05,
+                                              media.width * 0.02,
+                                              media.width * 0.05),
+                                          decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              color: page),
+                                          child: Column(
+                                            children: [
+                                              SizedBox(
                                                 width: media.width * 0.8,
                                                 child: Text(
                                                   languages[choosenLanguage][
-                                                      'text_open_camera_setting'],
+                                                      'text_choose_address_nav'],
                                                   style: GoogleFonts.notoSans(
-                                                      fontSize:
-                                                          media.width * sixteen,
+                                                      fontSize: media.width *
+                                                          sixteen,
                                                       color: textColor,
                                                       fontWeight:
                                                           FontWeight.w600),
-                                                )),
-                                            SizedBox(
-                                                height: media.width * 0.05),
-                                            Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment
-                                                      .spaceBetween,
-                                              children: [
-                                                InkWell(
-                                                    onTap: () async {
-                                                      await perm
-                                                          .openAppSettings();
-                                                    },
-                                                    child: Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_open_settings'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              color:
-                                                                  buttonColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600),
-                                                    )),
-                                                InkWell(
-                                                    onTap: () async {
-                                                      // pickImageFromCamera();
-                                                      setState(() {
-                                                        _permission = '';
-                                                      });
-                                                    },
-                                                    child: Text(
-                                                      languages[choosenLanguage]
-                                                          ['text_done'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      sixteen,
-                                                              color:
-                                                                  buttonColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600),
-                                                    ))
-                                              ],
-                                            )
-                                          ],
-                                        ),
-                                      )
-                                    ],
-                                  ),
-                                ))
-                              : Container(),
-
-                          //popup for cancel request
-                          (cancelRequest == true && driverReq.isNotEmpty)
-                              ? Positioned(
-                                  child: Container(
-                                  height: media.height * 1,
-                                  width: media.width * 1,
-                                  color: Colors.transparent.withOpacity(0.6),
-                                  alignment: Alignment.center,
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        padding:
-                                            EdgeInsets.all(media.width * 0.05),
-                                        width: media.width * 0.9,
-                                        decoration: BoxDecoration(
-                                            color: page,
-                                            borderRadius:
-                                                BorderRadius.circular(12)),
-                                        child: Column(children: [
-                                          //CAMBIAR IDIOMA
-                                          Text(
-                                            'Cancelar llamada',
-                                            style: GoogleFonts.montserrat(
-                                                color: newRedColor,
-                                                fontWeight: FontWeight.bold),
-                                          ),
-                                          Column(
-                                            children: cancelReasonsList
-                                                .asMap()
-                                                .map((i, value) {
-                                                  return MapEntry(
-                                                      i,
-                                                      InkWell(
-                                                        onTap: () {
-                                                          setState(() {
-                                                            _cancelReason =
-                                                                cancelReasonsList[
-                                                                        i]
-                                                                    ['reason'];
-                                                          });
-                                                        },
-                                                        child: Container(
-                                                          padding:
-                                                              EdgeInsets.all(
-                                                                  media.width *
-                                                                      0.01),
-                                                          child: Row(
-                                                            children: [
-                                                              Container(
-                                                                height: media
-                                                                        .height *
-                                                                    0.05,
-                                                                width: media
-                                                                        .width *
-                                                                    0.05,
-                                                                decoration: BoxDecoration(
-                                                                    shape: BoxShape
-                                                                        .circle,
-                                                                    border: Border.all(
-                                                                        color:
-                                                                            newRedColor,
-                                                                        width:
-                                                                            1.2)),
-                                                                alignment:
-                                                                    Alignment
-                                                                        .center,
-                                                                child: (_cancelReason ==
-                                                                        cancelReasonsList[i]
-                                                                            [
-                                                                            'reason'])
-                                                                    ? Container(
-                                                                        height: media.width *
-                                                                            0.03,
-                                                                        width: media.width *
-                                                                            0.03,
-                                                                        decoration:
-                                                                            BoxDecoration(
-                                                                          shape:
-                                                                              BoxShape.circle,
-                                                                          color:
-                                                                              newRedColor,
-                                                                        ),
-                                                                      )
-                                                                    : Container(),
-                                                              ),
-                                                              SizedBox(
-                                                                width: media
-                                                                        .width *
-                                                                    0.05,
-                                                              ),
-                                                              SizedBox(
-                                                                width: media
-                                                                        .width *
-                                                                    0.65,
-                                                                child: MyText(
-                                                                  fontweight:
-                                                                      FontWeight
-                                                                          .bold,
-                                                                  text: cancelReasonsList[
-                                                                          i][
-                                                                      'reason'],
-                                                                  size: media
-                                                                          .width *
-                                                                      twelve,
-                                                                ),
-                                                              )
-                                                            ],
-                                                          ),
-                                                        ),
-                                                      ));
-                                                })
-                                                .values
-                                                .toList(),
-                                          ),
-                                          InkWell(
-                                            onTap: () {
-                                              setState(() {
-                                                _cancelReason = 'others';
-                                              });
-                                            },
-                                            child: Container(
-                                              padding: EdgeInsets.all(
-                                                  media.width * 0.01),
-                                              child: Row(
-                                                children: [
-                                                  Container(
-                                                    height: media.height * 0.05,
-                                                    width: media.width * 0.05,
-                                                    decoration: BoxDecoration(
-                                                        shape: BoxShape.circle,
-                                                        border: Border.all(
-                                                            color: newRedColor,
-                                                            width: 1.2)),
-                                                    alignment: Alignment.center,
-                                                    child: (_cancelReason ==
-                                                            'others')
-                                                        ? Container(
-                                                            height:
-                                                                media.width *
-                                                                    0.03,
-                                                            width: media.width *
-                                                                0.03,
-                                                            decoration:
-                                                                BoxDecoration(
-                                                              shape: BoxShape
-                                                                  .circle,
-                                                              color:
-                                                                  newRedColor,
-                                                            ),
-                                                          )
-                                                        : Container(),
-                                                  ),
-                                                  SizedBox(
-                                                    width: media.width * 0.05,
-                                                  ),
-                                                  MyText(
-                                                    fontweight: FontWeight.bold,
-                                                    text: languages[
-                                                            choosenLanguage]
-                                                        ['text_others'],
-                                                    size: media.width * twelve,
-                                                  )
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-
-                                          (_cancelReason == 'others')
-                                              ? Container(
-                                                  margin: EdgeInsets.fromLTRB(
-                                                      0,
-                                                      media.width * 0.025,
-                                                      0,
-                                                      media.width * 0.025),
-                                                  padding: EdgeInsets.all(
-                                                      media.width * 0.05),
-                                                  width: media.width * 0.9,
-                                                  decoration: BoxDecoration(
-                                                      border: Border.all(
-                                                          color: borderLines,
-                                                          width: 1.2),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              12)),
-                                                  child: TextField(
-                                                    decoration: InputDecoration(
-                                                        border:
-                                                            InputBorder.none,
-                                                        hintText: languages[
-                                                                choosenLanguage]
-                                                            [
-                                                            'text_cancelRideReason'],
-                                                        hintStyle: GoogleFonts
-                                                            .notoSans(
-                                                                fontSize: media
-                                                                        .width *
-                                                                    twelve)),
-                                                    maxLines: 4,
-                                                    minLines: 2,
-                                                    onChanged: (val) {
-                                                      setState(() {
-                                                        cancelReasonText = val;
-                                                      });
-                                                    },
-                                                  ),
-                                                )
-                                              : Container(),
-                                          (_cancellingError != '')
-                                              ? Container(
-                                                  padding: EdgeInsets.only(
-                                                      top: media.width * 0.02,
-                                                      bottom: media.width *
-                                                          0.02),
-                                                  width: media.width * 0.9,
-                                                  child: Text(_cancellingError,
-                                                      style: GoogleFonts
-                                                          .notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      twelve,
-                                                              color:
-                                                                  Colors.red)))
-                                              : Container(),
-                                          Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              Button(
-                                                  height: media.height * 0.045,
-                                                  color: Colors.grey
-                                                      .withOpacity(0.5),
-                                                  textcolor: Colors.white,
-                                                  borcolor: Colors.grey
-                                                      .withOpacity(0.5),
-                                                  width: media.width * 0.39,
-                                                  onTap: () async {
-                                                    setState(() {
-                                                      cancelRequest = false;
-                                                    });
-                                                  },
-                                                  text: 'Atras'),
-                                              Button(
-                                                  height: media.height * 0.045,
-                                                  color: newRedColor,
-                                                  textcolor: Colors.white,
-                                                  borcolor: newRedColor,
-                                                  width: media.width * 0.39,
-                                                  onTap: () async {
-                                                    setState(() {
-                                                      _isLoading = true;
-                                                    });
-                                                    if (_cancelReason != '') {
-                                                      if (_cancelReason ==
-                                                          'others') {
-                                                        if (cancelReasonText !=
-                                                                '' &&
-                                                            cancelReasonText
-                                                                .isNotEmpty) {
-                                                          _cancellingError = '';
-                                                          var val =
-                                                              await cancelRequestDriver(
-                                                                  cancelReasonText);
-                                                          if (val == 'logout') {
-                                                            navigateLogout();
-                                                          }
-                                                          setState(() {
-                                                            cancelRequest =
-                                                                false;
-                                                          });
-                                                        } else {
-                                                          setState(() {
-                                                            _cancellingError =
-                                                                languages[
-                                                                        choosenLanguage]
-                                                                    [
-                                                                    'text_add_cancel_reason'];
-                                                          });
-                                                        }
-                                                      } else {
-                                                        var val =
-                                                            await cancelRequestDriver(
-                                                                _cancelReason);
-                                                        if (val == 'logout') {
-                                                          navigateLogout();
-                                                        }
-                                                        setState(() {
-                                                          cancelRequest = false;
-                                                        });
-                                                      }
-                                                    }
-                                                    setState(() {
-                                                      _isLoading = false;
-                                                    });
-                                                    SharedPreferences prefs =
-                                                        await SharedPreferences
-                                                            .getInstance();
-                                                    setState(() {
-                                                      dropProvider
-                                                              .mostrardDibujadoDestino =
-                                                          false;
-                                                      prefs.remove(
-                                                          'mostrardDibujadoDestino');
-                                                      prefs.remove(
-                                                          'puntosRutaDestino');
-                                                    });
-                                                  },
-                                                  text: 'Confirmar')
-                                            ],
-                                          )
-                                        ]),
-                                      ),
-                                    ],
-                                  ),
-                                ))
-                              : Container(),
-
-                          //loader
-                          (state == '')
-                              ? const Positioned(top: 0, child: Loading())
-                              : Container(),
-
-                          //logout popup
-                          (logout == true)
-                              ? Positioned(
-                                  top: 0,
-                                  child: Container(
-                                    height: media.height * 1,
-                                    width: media.width * 1,
-                                    color: Colors.transparent.withOpacity(0.6),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: media.width * 0.9,
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.end,
-                                            children: [
-                                              Container(
-                                                  height: media.height * 0.1,
-                                                  width: media.width * 0.1,
-                                                  decoration: BoxDecoration(
-                                                      shape: BoxShape.circle,
-                                                      color: page),
-                                                  child: InkWell(
-                                                      onTap: () {
-                                                        setState(() {
-                                                          logout = false;
-                                                        });
-                                                      },
-                                                      child: const Icon(Icons
-                                                          .cancel_outlined))),
-                                            ],
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: EdgeInsets.all(
-                                              media.width * 0.05),
-                                          width: media.width * 0.9,
-                                          decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              color: page),
-                                          child: Column(
-                                            children: [
-                                              Text(
-                                                languages[choosenLanguage]
-                                                    ['text_confirmlogout'],
-                                                textAlign: TextAlign.center,
-                                                style: GoogleFonts.notoSans(
-                                                    fontSize:
-                                                        media.width * sixteen,
-                                                    color: textColor,
-                                                    fontWeight:
-                                                        FontWeight.w600),
-                                              ),
-                                              SizedBox(
-                                                height: media.width * 0.05,
-                                              ),
-                                              Button(
-                                                  onTap: () async {
-                                                    if (userDetails['active'] ==
-                                                        true) {
-                                                      var val =
-                                                          await driverStatus();
-                                                      if (val == 'logout') {
-                                                        navigateLogout();
-                                                      }
-                                                    }
-                                                    setState(() {
-                                                      _isLoading = true;
-                                                      logout = false;
-                                                    });
-                                                    var result =
-                                                        await userLogout();
-                                                    if (result == 'success') {
-                                                      setState(() {
-                                                        navigateLogout();
-                                                        userDetails.clear();
-                                                      });
-                                                    } else if (result ==
-                                                        'logout') {
-                                                      navigateLogout();
-                                                    } else {
-                                                      setState(() {
-                                                        logout = true;
-                                                      });
-                                                    }
-                                                  },
-                                                  text:
-                                                      languages[choosenLanguage]
-                                                          ['text_confirm'])
-                                            ],
-                                          ),
-                                        )
-                                      ],
-                                    ),
-                                  ))
-                              : Container(),
-
-                          //waiting time popup
-                          (_showWaitingInfo == true)
-                              ? Positioned(
-                                  top: 0,
-                                  child: Container(
-                                    height: media.height * 1,
-                                    width: media.width * 1,
-                                    color: Colors.transparent.withOpacity(0.6),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: media.width * 0.9,
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.end,
-                                            children: [
-                                              Container(
-                                                  height: media.height * 0.1,
-                                                  width: media.width * 0.1,
-                                                  decoration: BoxDecoration(
-                                                      shape: BoxShape.circle,
-                                                      color: page),
-                                                  child: InkWell(
-                                                      onTap: () {
-                                                        setState(() {
-                                                          _showWaitingInfo =
-                                                              false;
-                                                        });
-                                                      },
-                                                      child: const Icon(Icons
-                                                          .cancel_outlined))),
-                                            ],
-                                          ),
-                                        ),
-                                        Container(
-                                          padding: EdgeInsets.all(
-                                              media.width * 0.05),
-                                          width: media.width * 0.9,
-                                          decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              color: page),
-                                          child: Column(
-                                            children: [
-                                              Text(
-                                                languages[choosenLanguage]
-                                                    ['text_waiting_time_1'],
-                                                textAlign: TextAlign.center,
-                                                style: GoogleFonts.notoSans(
-                                                    fontSize:
-                                                        media.width * sixteen,
-                                                    color: textColor,
-                                                    fontWeight:
-                                                        FontWeight.w600),
-                                              ),
-                                              SizedBox(
-                                                height: media.width * 0.05,
-                                              ),
-                                              Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment
-                                                        .spaceBetween,
-                                                children: [
-                                                  Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_waiting_time_2'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      fourteen,
-                                                              color:
-                                                                  textColor)),
-                                                  Text(
-                                                      '${driverReq['free_waiting_time_in_mins_before_trip_start']} ${languages[choosenLanguage]['text_mins']}',
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      fourteen,
-                                                              color: textColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600)),
-                                                ],
-                                              ),
-                                              SizedBox(
-                                                height: media.width * 0.05,
-                                              ),
-                                              Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment
-                                                        .spaceBetween,
-                                                children: [
-                                                  Text(
-                                                      languages[choosenLanguage]
-                                                          [
-                                                          'text_waiting_time_3'],
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      fourteen,
-                                                              color:
-                                                                  textColor)),
-                                                  Text(
-                                                      '${driverReq['free_waiting_time_in_mins_after_trip_start']} ${languages[choosenLanguage]['text_mins']}',
-                                                      style:
-                                                          GoogleFonts.notoSans(
-                                                              fontSize:
-                                                                  media.width *
-                                                                      fourteen,
-                                                              color: textColor,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600)),
-                                                ],
-                                              ),
-                                            ],
-                                          ),
-                                        )
-                                      ],
-                                    ),
-                                  ))
-                              : Container(),
-
-                          //no internet
-                          (internet == false)
-                              ? Positioned(
-                                  top: 0,
-                                  child: NoInternet(
-                                    onTap: () {
-                                      setState(() {
-                                        internetTrue();
-                                        getUserDetails();
-                                      });
-                                    },
-                                  ))
-                              : Container(),
-
-                          //sos popup
-                          (showSos == true)
-                              ? Positioned(
-                                  top: 0,
-                                  child: Container(
-                                    height: media.height * 1,
-                                    width: media.width * 1,
-                                    color: Colors.transparent.withOpacity(0.6),
-                                    child: Column(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          SizedBox(
-                                            width: media.width * 0.7,
-                                            child: Row(
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.end,
-                                              children: [
-                                                InkWell(
-                                                  onTap: () {
-                                                    setState(() {
-                                                      notifyCompleted = false;
-                                                      showSos = false;
-                                                    });
-                                                  },
-                                                  child: Container(
-                                                    height: media.width * 0.1,
-                                                    width: media.width * 0.1,
-                                                    decoration: BoxDecoration(
-                                                        shape: BoxShape.circle,
-                                                        color: page),
-                                                    child: const Icon(
-                                                        Icons.cancel_outlined),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          SizedBox(
-                                            height: media.width * 0.05,
-                                          ),
-                                          Container(
-                                            padding: EdgeInsets.all(
-                                                media.width * 0.05),
-                                            height: media.height * 0.5,
-                                            width: media.width * 0.7,
-                                            decoration: BoxDecoration(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                                color: page),
-                                            child: SingleChildScrollView(
-                                                physics:
-                                                    const BouncingScrollPhysics(),
-                                                child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    InkWell(
-                                                      onTap: () async {
-                                                        setState(() {
-                                                          notifyCompleted =
-                                                              false;
-                                                        });
-                                                        var val =
-                                                            await notifyAdmin();
-                                                        if (val == true) {
-                                                          setState(() {
-                                                            notifyCompleted =
-                                                                true;
-                                                          });
-                                                        }
-                                                      },
-                                                      child: Container(
-                                                        padding: EdgeInsets.all(
-                                                            media.width * 0.05),
-                                                        child: Row(
-                                                          mainAxisAlignment:
-                                                              MainAxisAlignment
-                                                                  .spaceBetween,
-                                                          children: [
-                                                            Column(
-                                                              crossAxisAlignment:
-                                                                  CrossAxisAlignment
-                                                                      .start,
-                                                              children: [
-                                                                Text(
-                                                                  languages[
-                                                                          choosenLanguage]
-                                                                      [
-                                                                      'text_notifyadmin'],
-                                                                  style: GoogleFonts.notoSans(
-                                                                      fontSize:
-                                                                          media.width *
-                                                                              sixteen,
-                                                                      color:
-                                                                          textColor,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w600),
-                                                                ),
-                                                                (notifyCompleted ==
-                                                                        true)
-                                                                    ? Container(
-                                                                        padding:
-                                                                            EdgeInsets.only(top: media.width * 0.01),
-                                                                        child:
-                                                                            Text(
-                                                                          languages[choosenLanguage]
-                                                                              [
-                                                                              'text_notifysuccess'],
-                                                                          style:
-                                                                              GoogleFonts.notoSans(
-                                                                            fontSize:
-                                                                                media.width * twelve,
-                                                                            color:
-                                                                                const Color(0xff319900),
-                                                                          ),
-                                                                        ),
-                                                                      )
-                                                                    : Container()
-                                                              ],
-                                                            ),
-                                                            const Icon(Icons
-                                                                .notification_add)
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    (sosData.isNotEmpty)
-                                                        ? Column(
-                                                            children: sosData
-                                                                .asMap()
-                                                                .map(
-                                                                    (i, value) {
-                                                                  return MapEntry(
-                                                                      i,
-                                                                      InkWell(
-                                                                        onTap:
-                                                                            () {
-                                                                          makingPhoneCall(sosData[i]['number'].toString().replaceAll(
-                                                                              ' ',
-                                                                              ''));
-                                                                        },
-                                                                        child:
-                                                                            Container(
-                                                                          padding:
-                                                                              EdgeInsets.all(media.width * 0.05),
-                                                                          child:
-                                                                              Row(
-                                                                            mainAxisAlignment:
-                                                                                MainAxisAlignment.spaceBetween,
-                                                                            children: [
-                                                                              Column(
-                                                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                                                children: [
-                                                                                  SizedBox(
-                                                                                    width: media.width * 0.4,
-                                                                                    child: Text(
-                                                                                      sosData[i]['name'],
-                                                                                      style: GoogleFonts.notoSans(fontSize: media.width * fourteen, color: textColor, fontWeight: FontWeight.w600),
-                                                                                    ),
-                                                                                  ),
-                                                                                  SizedBox(
-                                                                                    height: media.width * 0.01,
-                                                                                  ),
-                                                                                  Text(
-                                                                                    sosData[i]['number'],
-                                                                                    style: GoogleFonts.notoSans(
-                                                                                      fontSize: media.width * twelve,
-                                                                                      color: textColor,
-                                                                                    ),
-                                                                                  )
-                                                                                ],
-                                                                              ),
-                                                                              const Icon(Icons.call)
-                                                                            ],
-                                                                          ),
-                                                                        ),
-                                                                      ));
-                                                                })
-                                                                .values
-                                                                .toList(),
-                                                          )
-                                                        : Container(
-                                                            width: media.width *
-                                                                0.7,
-                                                            alignment: Alignment
-                                                                .center,
-                                                            child: Text(
-                                                              languages[
-                                                                      choosenLanguage]
-                                                                  [
-                                                                  'text_noDataFound'],
-                                                              style: GoogleFonts.notoSans(
-                                                                  fontSize: media
-                                                                          .width *
-                                                                      eighteen,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w600,
-                                                                  color:
-                                                                      textColor),
-                                                            ),
-                                                          )
-                                                  ],
-                                                )),
-                                          )
-                                        ]),
-                                  ))
-                              : Container(),
-
-                          //choose option for seeing location on map while having multiple stops
-                          (_tripOpenMap == true)
-                              ? Positioned(
-                                  top: 0,
-                                  child: Container(
-                                    height: media.height * 1,
-                                    width: media.width * 1,
-                                    color: Colors.transparent.withOpacity(0.6),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: media.width * 0.9,
-                                          child: Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.end,
-                                            children: [
-                                              InkWell(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _tripOpenMap = false;
-                                                  });
-                                                },
-                                                child: Container(
-                                                  height: media.width * 0.1,
-                                                  width: media.width * 0.1,
-                                                  decoration: BoxDecoration(
-                                                      shape: BoxShape.circle,
-                                                      color: page),
-                                                  child: Icon(
-                                                    Icons.cancel_outlined,
-                                                    color: textColor,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        SizedBox(
-                                          height: media.width * 0.05,
-                                        ),
-                                        Container(
-                                            width: media.width * 0.9,
-                                            padding: EdgeInsets.fromLTRB(
-                                                media.width * 0.02,
-                                                media.width * 0.05,
-                                                media.width * 0.02,
-                                                media.width * 0.05),
-                                            decoration: BoxDecoration(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                                color: page),
-                                            child: Column(
-                                              children: [
-                                                SizedBox(
-                                                  width: media.width * 0.8,
-                                                  child: Text(
-                                                    languages[choosenLanguage][
-                                                        'text_choose_address_nav'],
-                                                    style: GoogleFonts.notoSans(
-                                                        fontSize: media.width *
-                                                            sixteen,
-                                                        color: textColor,
-                                                        fontWeight:
-                                                            FontWeight.w600),
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-                                                SizedBox(
-                                                  height: media.width * 0.03,
-                                                ),
-                                                SizedBox(
-                                                  height: media.height * 0.2,
-                                                  child: SingleChildScrollView(
-                                                    physics:
-                                                        const BouncingScrollPhysics(),
-                                                    child: Column(
-                                                      children: tripStops
-                                                          .asMap()
-                                                          .map((i, value) {
-                                                            return MapEntry(
-                                                                i,
-                                                                Container(
-                                                                  // width: media.width*0.5,
-                                                                  padding: EdgeInsets
-                                                                      .all(media
-                                                                              .width *
-                                                                          0.025),
-                                                                  child: Row(
-                                                                    mainAxisAlignment:
-                                                                        MainAxisAlignment
-                                                                            .spaceBetween,
-                                                                    children: [
-                                                                      Expanded(
-                                                                        child:
-                                                                            Text(
-                                                                          tripStops[i]
-                                                                              [
-                                                                              'address'],
-                                                                          style: GoogleFonts.notoSans(
-                                                                              fontSize: media.width * fourteen,
-                                                                              color: textColor,
-                                                                              fontWeight: FontWeight.w600),
-                                                                        ),
-                                                                      ),
-                                                                      SizedBox(
-                                                                        width: media.width *
-                                                                            0.01,
-                                                                      ),
-                                                                      InkWell(
-                                                                        onTap:
-                                                                            () {
-                                                                          openMap(
-                                                                              tripStops[i]['latitude'],
-                                                                              tripStops[i]['longitude']);
-                                                                        },
-                                                                        child:
-                                                                            SizedBox(
-                                                                          width:
-                                                                              media.width * 00.08,
-                                                                          child: Image.asset(
-                                                                              'assets/images/googlemaps.png',
-                                                                              width: media.width * 0.05,
-                                                                              fit: BoxFit.contain),
-                                                                        ),
-                                                                      ),
-                                                                      (userDetails['enable_vase_map'] ==
-                                                                              '1')
-                                                                          ? SizedBox(
-                                                                              width: media.width * 0.02,
-                                                                            )
-                                                                          : Container(),
-                                                                      (userDetails['enable_vase_map'] ==
-                                                                              '1')
-                                                                          ? InkWell(
-                                                                              onTap: () {
-                                                                                openWazeMap(tripStops[i]['latitude'], tripStops[i]['longitude']);
-                                                                              },
-                                                                              child: SizedBox(
-                                                                                width: media.width * 00.1,
-                                                                                child: Image.asset('assets/images/waze.png', width: media.width * 0.05, fit: BoxFit.contain),
-                                                                              ),
-                                                                            )
-                                                                          : Container(),
-                                                                    ],
-                                                                  ),
-                                                                ));
-                                                          })
-                                                          .values
-                                                          .toList(),
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ))
-                                      ],
-                                    ),
-                                  ))
-                              : Container(),
-                          (_showToast == true)
-                              ? Positioned(
-                                  top: media.height * 0.2,
-                                  child: Container(
-                                    width: media.width * 0.9,
-                                    margin: EdgeInsets.all(media.width * 0.05),
-                                    padding:
-                                        EdgeInsets.all(media.width * 0.025),
-                                    decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(10),
-                                        color: page),
-                                    child: Text(
-                                      'Route Poly line is not available in demo',
-                                      style: GoogleFonts.poppins(
-                                          fontSize: media.width * twelve,
-                                          color: textColor),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ))
-                              : Container(),
-                          //loader
-                          (_isLoading == true)
-                              ? const Positioned(top: 0, child: Loading())
-                              : Container(),
-                          //pickup marker
-                          Positioned(
-                            top: media.height * 1.5,
-                            left: 100,
-                            child: RepaintBoundary(
-                                key: iconKey,
-                                child: Column(
-                                  children: [
-                                    Container(
-                                      decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                              colors: [
-                                                (isDarkTheme == true)
-                                                    ? const Color(0xff000000)
-                                                    : const Color(0xffFFFFFF),
-                                                (isDarkTheme == true)
-                                                    ? const Color(0xff808080)
-                                                    : const Color(0xffEFEFEF),
-                                              ],
-                                              begin: Alignment.topCenter,
-                                              end: Alignment.bottomCenter),
-                                          borderRadius:
-                                              BorderRadius.circular(5)),
-                                      width: media.width * 0.5,
-                                      padding: const EdgeInsets.all(5),
-                                      child: (driverReq.isNotEmpty &&
-                                              driverReq['pick_address'] != null)
-                                          ? MyText(
-                                              text: driverReq['pick_address'],
-                                              size: media.width * twelve,
-                                              overflow: TextOverflow.fade,
-                                              maxLines: 1,
-                                            )
-                                          : (choosenRide.isNotEmpty)
-                                              ? MyText(
-                                                  text: choosenRide[0]
-                                                      ['pick_address'],
-                                                  size: media.width * twelve,
-                                                  overflow: TextOverflow.fade,
                                                   maxLines: 1,
-                                                )
-                                              : Container(),
-                                    ),
-                                    const SizedBox(
-                                      height: 10,
-                                    ),
-                                    Container(
-                                      decoration: const BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          image: DecorationImage(
-                                              image: AssetImage(
-                                                  'assets/images/pick_icon.png'),
-                                              fit: BoxFit.contain)),
-                                      height: media.width * 0.07,
-                                      width: media.width * 0.08,
-                                    )
-                                  ],
-                                )),
-                          ),
-                          //drop marker
-                          Positioned(
-                              top: media.height * 2.5,
-                              left: 100,
-                              child: Column(
-                                children: [
-                                  (tripStops.isNotEmpty)
-                                      ? Column(
-                                          children: tripStops
-                                              .asMap()
-                                              .map((i, value) {
-                                                iconDropKeys[i] = GlobalKey();
-                                                return MapEntry(
-                                                  i,
-                                                  RepaintBoundary(
-                                                      key: iconDropKeys[i],
-                                                      child: Column(
-                                                        children: [
-                                                          (i <=
-                                                                  tripStops
-                                                                          .length -
-                                                                      2)
-                                                              ? Column(
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              SizedBox(
+                                                height: media.width * 0.03,
+                                              ),
+                                              SizedBox(
+                                                height: media.height * 0.2,
+                                                child: SingleChildScrollView(
+                                                  physics:
+                                                      const BouncingScrollPhysics(),
+                                                  child: Column(
+                                                    children: tripStops
+                                                        .asMap()
+                                                        .map((i, value) {
+                                                          return MapEntry(
+                                                              i,
+                                                              Container(
+                                                                // width: media.width*0.5,
+                                                                padding: EdgeInsets
+                                                                    .all(media
+                                                                            .width *
+                                                                        0.025),
+                                                                child: Row(
+                                                                  mainAxisAlignment:
+                                                                      MainAxisAlignment
+                                                                          .spaceBetween,
                                                                   children: [
-                                                                    Container(
-                                                                      padding: const EdgeInsets
-                                                                          .only(
-                                                                          bottom:
-                                                                              5),
+                                                                    Expanded(
                                                                       child:
                                                                           Text(
-                                                                        (i + 1)
-                                                                            .toString(),
+                                                                        tripStops[i]
+                                                                            [
+                                                                            'address'],
                                                                         style: GoogleFonts.notoSans(
-                                                                            fontSize: media.width *
-                                                                                sixteen,
-                                                                            fontWeight:
-                                                                                FontWeight.w600,
-                                                                            color: Colors.red),
+                                                                            fontSize: media.width * fourteen,
+                                                                            color: textColor,
+                                                                            fontWeight: FontWeight.w600),
                                                                       ),
                                                                     ),
-                                                                    const SizedBox(
-                                                                      height:
-                                                                          10,
+                                                                    SizedBox(
+                                                                      width: media.width *
+                                                                          0.01,
                                                                     ),
+                                                                    InkWell(
+                                                                      onTap:
+                                                                          () {
+                                                                        openMap(
+                                                                            tripStops[i]['latitude'],
+                                                                            tripStops[i]['longitude']);
+                                                                      },
+                                                                      child:
+                                                                          SizedBox(
+                                                                        width:
+                                                                            media.width * 00.08,
+                                                                        child: Image.asset(
+                                                                            'assets/images/googlemaps.png',
+                                                                            width: media.width * 0.05,
+                                                                            fit: BoxFit.contain),
+                                                                      ),
+                                                                    ),
+                                                                    (userDetails['enable_vase_map'] ==
+                                                                            '1')
+                                                                        ? SizedBox(
+                                                                            width: media.width * 0.02,
+                                                                          )
+                                                                        : Container(),
+                                                                    (userDetails['enable_vase_map'] ==
+                                                                            '1')
+                                                                        ? InkWell(
+                                                                            onTap: () {
+                                                                              openWazeMap(tripStops[i]['latitude'], tripStops[i]['longitude']);
+                                                                            },
+                                                                            child: SizedBox(
+                                                                              width: media.width * 00.1,
+                                                                              child: Image.asset('assets/images/waze.png', width: media.width * 0.05, fit: BoxFit.contain),
+                                                                            ),
+                                                                          )
+                                                                        : Container(),
                                                                   ],
-                                                                )
-                                                              : (i ==
-                                                                      tripStops
-                                                                              .length -
-                                                                          1)
-                                                                  ? Column(
-                                                                      children: [
-                                                                        Container(
-                                                                          decoration: BoxDecoration(
-                                                                              gradient: LinearGradient(colors: [
-                                                                                (isDarkTheme == true) ? const Color(0xff000000) : const Color(0xffFFFFFF),
-                                                                                (isDarkTheme == true) ? const Color(0xff808080) : const Color(0xffEFEFEF),
-                                                                              ], begin: Alignment.topCenter, end: Alignment.bottomCenter),
-                                                                              borderRadius: BorderRadius.circular(5)),
-                                                                          width:
-                                                                              media.width * 0.5,
-                                                                          padding: const EdgeInsets
-                                                                              .all(
-                                                                              5),
-                                                                          child: (driverReq.isNotEmpty && driverReq['drop_address'] != null)
-                                                                              ? Text(driverReq['drop_address'],
-                                                                                  maxLines: 1,
-                                                                                  style: GoogleFonts.notoSans(
-                                                                                    fontSize: media.width * ten,
-                                                                                  ))
-                                                                              : (choosenRide.isNotEmpty && choosenRide[0]['drop_address'] != null)
-                                                                                  ? Text(
-                                                                                      choosenRide[choosenRide.length - 1]['drop_address'],
-                                                                                      maxLines: 1,
-                                                                                      style: GoogleFonts.notoSans(
-                                                                                        fontSize: media.width * ten,
-                                                                                      ),
-                                                                                      overflow: TextOverflow.fade,
-                                                                                    )
-                                                                                  : Container(),
-                                                                        ),
-                                                                        const SizedBox(
-                                                                          height:
-                                                                              10,
-                                                                        ),
-                                                                        Container(
-                                                                          decoration: const BoxDecoration(
-                                                                              shape: BoxShape.circle,
-                                                                              image: DecorationImage(image: AssetImage('assets/images/drop_icon.png'), fit: BoxFit.contain)),
-                                                                          height:
-                                                                              media.width * 0.07,
-                                                                          width:
-                                                                              media.width * 0.08,
-                                                                        )
-                                                                      ],
-                                                                    )
-                                                                  : Container(),
-                                                        ],
-                                                      )),
-                                                );
-                                              })
-                                              .values
-                                              .toList(),
-                                        )
-                                      : Container(),
+                                                                ),
+                                                              ));
+                                                        })
+                                                        .values
+                                                        .toList(),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ))
+                                    ],
+                                  ),
+                                ))
+                            : Container(),
+                        (_showToast == true)
+                            ? Positioned(
+                                top: media.height * 0.2,
+                                child: Container(
+                                  width: media.width * 0.9,
+                                  margin: EdgeInsets.all(media.width * 0.05),
+                                  padding:
+                                      EdgeInsets.all(media.width * 0.025),
+                                  decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(10),
+                                      color: page),
+                                  child: Text(
+                                    'Route Poly line is not available in demo',
+                                    style: GoogleFonts.poppins(
+                                        fontSize: media.width * twelve,
+                                        color: textColor),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ))
+                            : Container(),
+                        //loader
+                        (_isLoading == true)
+                            ? const Positioned(top: 0, child: Loading())
+                            : Container(),
+                        //pickup marker
+                        Positioned(
+                          top: media.height * 1.5,
+                          left: 100,
+                          child: RepaintBoundary(
+                              key: iconKey,
+                              child: Column(
+                                children: [
+                                  Container(
+                                    decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                            colors: [
+                                              (isDarkTheme == true)
+                                                  ? const Color(0xff000000)
+                                                  : const Color(0xffFFFFFF),
+                                              (isDarkTheme == true)
+                                                  ? const Color(0xff808080)
+                                                  : const Color(0xffEFEFEF),
+                                            ],
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter),
+                                        borderRadius:
+                                            BorderRadius.circular(5)),
+                                    width: media.width * 0.5,
+                                    padding: const EdgeInsets.all(5),
+                                    child: (driverReq.isNotEmpty &&
+                                            driverReq['pick_address'] != null)
+                                        ? MyText(
+                                            text: driverReq['pick_address'],
+                                            size: media.width * twelve,
+                                            overflow: TextOverflow.fade,
+                                            maxLines: 1,
+                                          )
+                                        : (choosenRide.isNotEmpty)
+                                            ? MyText(
+                                                text: choosenRide[0]
+                                                    ['pick_address'],
+                                                size: media.width * twelve,
+                                                overflow: TextOverflow.fade,
+                                                maxLines: 1,
+                                              )
+                                            : Container(),
+                                  ),
+                                  const SizedBox(
+                                    height: 10,
+                                  ),
+                                  Container(
+                                    decoration: const BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        image: DecorationImage(
+                                            image: AssetImage(
+                                                'assets/images/pick_icon.png'),
+                                            fit: BoxFit.contain)),
+                                    height: media.width * 0.07,
+                                    width: media.width * 0.08,
+                                  )
                                 ],
                               )),
-
-                          //drop marker
-                          Positioned(
+                        ),
+                        //drop marker
+                        Positioned(
                             top: media.height * 2.5,
                             left: 100,
                             child: Column(
                               children: [
-                                RepaintBoundary(
-                                    key: iconDropKey,
-                                    child: Column(
-                                      children: [
-                                        Container(
-                                          decoration: BoxDecoration(
-                                              gradient: LinearGradient(
-                                                  colors: [
-                                                    (isDarkTheme == true)
-                                                        ? const Color(
-                                                            0xff000000)
-                                                        : const Color(
-                                                            0xffFFFFFF),
-                                                    (isDarkTheme == true)
-                                                        ? const Color(
-                                                            0xff808080)
-                                                        : const Color(
-                                                            0xffEFEFEF),
-                                                  ],
-                                                  begin: Alignment.topCenter,
-                                                  end: Alignment.bottomCenter),
-                                              borderRadius:
-                                                  BorderRadius.circular(5)),
-                                          width: media.width * 0.5,
-                                          padding: const EdgeInsets.all(5),
-                                          child: (driverReq.isNotEmpty &&
-                                                  driverReq['drop_address'] !=
-                                                      null)
-                                              ? MyText(
-                                                  text:
-                                                      driverReq['drop_address'],
-                                                  size: media.width * ten,
-                                                  overflow: TextOverflow.fade,
-                                                  maxLines: 1,
-                                                )
-                                              : (choosenRide.isNotEmpty &&
-                                                      choosenRide[0][
-                                                              'drop_address'] !=
-                                                          null)
-                                                  ? MyText(
-                                                      text: choosenRide[0]
-                                                          ['drop_address'],
-                                                      size: media.width * ten,
-                                                      overflow:
-                                                          TextOverflow.fade,
-                                                      maxLines: 1,
-                                                    )
-                                                  : Container(),
-                                        ),
-                                        const SizedBox(
-                                          height: 10,
-                                        ),
-                                        Container(
-                                          decoration: const BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              image: DecorationImage(
-                                                  image: AssetImage(
-                                                      'assets/images/drop_icon.png'),
-                                                  fit: BoxFit.contain)),
-                                          height: media.width * 0.07,
-                                          width: media.width * 0.08,
-                                        )
-                                      ],
-                                    )),
+                                (tripStops.isNotEmpty)
+                                    ? Column(
+                                        children: tripStops
+                                            .asMap()
+                                            .map((i, value) {
+                                              iconDropKeys[i] = GlobalKey();
+                                              return MapEntry(
+                                                i,
+                                                RepaintBoundary(
+                                                    key: iconDropKeys[i],
+                                                    child: Column(
+                                                      children: [
+                                                        (i <=
+                                                                tripStops
+                                                                        .length -
+                                                                    2)
+                                                            ? Column(
+                                                                children: [
+                                                                  Container(
+                                                                    padding: const EdgeInsets
+                                                                        .only(
+                                                                        bottom:
+                                                                            5),
+                                                                    child:
+                                                                        Text(
+                                                                      (i + 1)
+                                                                          .toString(),
+                                                                      style: GoogleFonts.notoSans(
+                                                                          fontSize: media.width *
+                                                                              sixteen,
+                                                                          fontWeight:
+                                                                              FontWeight.w600,
+                                                                          color: Colors.red),
+                                                                    ),
+                                                                  ),
+                                                                  const SizedBox(
+                                                                    height:
+                                                                        10,
+                                                                  ),
+                                                                ],
+                                                              )
+                                                            : (i ==
+                                                                    tripStops
+                                                                            .length -
+                                                                        1)
+                                                                ? Column(
+                                                                    children: [
+                                                                      Container(
+                                                                        decoration: BoxDecoration(
+                                                                            gradient: LinearGradient(colors: [
+                                                                              (isDarkTheme == true) ? const Color(0xff000000) : const Color(0xffFFFFFF),
+                                                                              (isDarkTheme == true) ? const Color(0xff808080) : const Color(0xffEFEFEF),
+                                                                            ], begin: Alignment.topCenter, end: Alignment.bottomCenter),
+                                                                            borderRadius: BorderRadius.circular(5)),
+                                                                        width:
+                                                                            media.width * 0.5,
+                                                                        padding: const EdgeInsets
+                                                                            .all(
+                                                                            5),
+                                                                        child: (driverReq.isNotEmpty && driverReq['drop_address'] != null)
+                                                                            ? Text(driverReq['drop_address'],
+                                                                                maxLines: 1,
+                                                                                style: GoogleFonts.notoSans(
+                                                                                  fontSize: media.width * ten,
+                                                                                ))
+                                                                            : (choosenRide.isNotEmpty && choosenRide[0]['drop_address'] != null)
+                                                                                ? Text(
+                                                                                    choosenRide[choosenRide.length - 1]['drop_address'],
+                                                                                    maxLines: 1,
+                                                                                    style: GoogleFonts.notoSans(
+                                                                                      fontSize: media.width * ten,
+                                                                                    ),
+                                                                                    overflow: TextOverflow.fade,
+                                                                                  )
+                                                                                : Container(),
+                                                                      ),
+                                                                      const SizedBox(
+                                                                        height:
+                                                                            10,
+                                                                      ),
+                                                                      Container(
+                                                                        decoration: const BoxDecoration(
+                                                                            shape: BoxShape.circle,
+                                                                            image: DecorationImage(image: AssetImage('assets/images/drop_icon.png'), fit: BoxFit.contain)),
+                                                                        height:
+                                                                            media.width * 0.07,
+                                                                        width:
+                                                                            media.width * 0.08,
+                                                                      )
+                                                                    ],
+                                                                  )
+                                                                : Container(),
+                                                      ],
+                                                    )),
+                                              );
+                                            })
+                                            .values
+                                            .toList(),
+                                      )
+                                    : Container(),
                               ],
-                            ),
-                          ),
-                          (isOverLayPermission &&
-                                  Theme.of(context).platform ==
-                                      TargetPlatform.android)
-                              ? Positioned(
-                                  child: Container(
-                                  height: media.height * 1,
-                                  width: media.width * 1,
-                                  color: Colors.black.withOpacity(0.2),
-                                  alignment: Alignment.center,
+                            )),
+                    
+                        //drop marker
+                        Positioned(
+                          top: media.height * 2.5,
+                          left: 100,
+                          child: Column(
+                            children: [
+                              RepaintBoundary(
+                                  key: iconDropKey,
                                   child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
                                       Container(
-                                        // height: media.width * 0.5,
-                                        width: media.width * 0.9,
-                                        padding:
-                                            EdgeInsets.all(media.width * 0.05),
                                         decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(
-                                              media.width * 0.05),
-                                          color: page,
-                                        ),
-                                        child: Column(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            MyText(
-                                              text:
-                                                  "Permitir la superposicion para aparecer encima de otras aplicaciones",
-                                              // "Please Allow Overlay Permisson for Appear on the Other Apps",
-                                              size: media.width * sixteen,
-                                              textAlign: TextAlign.center,
-                                              fontweight: FontWeight.bold,
-                                            ),
-                                            SizedBox(
-                                              height: media.width * 0.05,
-                                            ),
-                                            Row(
-                                              children: [
-                                                InkWell(
+                                            gradient: LinearGradient(
+                                                colors: [
+                                                  (isDarkTheme == true)
+                                                      ? const Color(
+                                                          0xff000000)
+                                                      : const Color(
+                                                          0xffFFFFFF),
+                                                  (isDarkTheme == true)
+                                                      ? const Color(
+                                                          0xff808080)
+                                                      : const Color(
+                                                          0xffEFEFEF),
+                                                ],
+                                                begin: Alignment.topCenter,
+                                                end: Alignment.bottomCenter),
+                                            borderRadius:
+                                                BorderRadius.circular(5)),
+                                        width: media.width * 0.5,
+                                        padding: const EdgeInsets.all(5),
+                                        child: (driverReq.isNotEmpty &&
+                                                driverReq['drop_address'] !=
+                                                    null)
+                                            ? MyText(
+                                                text:
+                                                    driverReq['drop_address'],
+                                                size: media.width * ten,
+                                                overflow: TextOverflow.fade,
+                                                maxLines: 1,
+                                              )
+                                            : (choosenRide.isNotEmpty &&
+                                                    choosenRide[0][
+                                                            'drop_address'] !=
+                                                        null)
+                                                ? MyText(
+                                                    text: choosenRide[0]
+                                                        ['drop_address'],
+                                                    size: media.width * ten,
+                                                    overflow:
+                                                        TextOverflow.fade,
+                                                    maxLines: 1,
+                                                  )
+                                                : Container(),
+                                      ),
+                                      const SizedBox(
+                                        height: 10,
+                                      ),
+                                      Container(
+                                        decoration: const BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            image: DecorationImage(
+                                                image: AssetImage(
+                                                    'assets/images/drop_icon.png'),
+                                                fit: BoxFit.contain)),
+                                        height: media.width * 0.07,
+                                        width: media.width * 0.08,
+                                      )
+                                    ],
+                                  )),
+                            ],
+                          ),
+                        ),
+                        (isOverLayPermission &&
+                                Theme.of(context).platform ==
+                                    TargetPlatform.android)
+                            ? Positioned(
+                                child: Container(
+                                height: media.height * 1,
+                                width: media.width * 1,
+                                color: Colors.black.withOpacity(0.2),
+                                alignment: Alignment.center,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      // height: media.width * 0.5,
+                                      width: media.width * 0.9,
+                                      padding:
+                                          EdgeInsets.all(media.width * 0.05),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(
+                                            media.width * 0.05),
+                                        color: page,
+                                      ),
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          MyText(
+                                            text:
+                                                "Permitir la superposicion para aparecer encima de otras aplicaciones",
+                                            // "Please Allow Overlay Permisson for Appear on the Other Apps",
+                                            size: media.width * sixteen,
+                                            textAlign: TextAlign.center,
+                                            fontweight: FontWeight.bold,
+                                          ),
+                                          SizedBox(
+                                            height: media.width * 0.05,
+                                          ),
+                                          Row(
+                                            children: [
+                                              InkWell(
+                                                onTap: () {
+                                                  setState(() {
+                                                    isOverLayPermission =
+                                                        false;
+                                                  });
+                                                  pref.setBool(
+                                                      'isOverlaypermission',
+                                                      isOverLayPermission);
+                                                },
+                                                child: SizedBox(
+                                                  width: media.width * 0.3,
+                                                  child: MyText(
+                                                    text: languages[
+                                                            choosenLanguage]
+                                                        ['text_decline'],
+                                                    size:
+                                                        media.width * sixteen,
+                                                    color: verifyDeclined,
+                                                    fontweight:
+                                                        FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ),
+                                              Expanded(
+                                                child: InkWell(
                                                   onTap: () {
                                                     setState(() {
                                                       isOverLayPermission =
                                                           false;
                                                     });
-                                                    pref.setBool(
-                                                        'isOverlaypermission',
-                                                        isOverLayPermission);
+                                                    log('TODO: FM - Activando Buble');
+                                                    // DashBubble.instance.requestOverlayPermission();
                                                   },
-                                                  child: SizedBox(
-                                                    width: media.width * 0.3,
-                                                    child: MyText(
-                                                      text: languages[
-                                                              choosenLanguage]
-                                                          ['text_decline'],
-                                                      size:
-                                                          media.width * sixteen,
-                                                      color: verifyDeclined,
-                                                      fontweight:
-                                                          FontWeight.bold,
-                                                    ),
+                                                  child: MyText(
+                                                    text: languages[
+                                                            choosenLanguage][
+                                                        'text_open_settings'],
+                                                    textAlign: TextAlign.end,
+                                                    size:
+                                                        media.width * sixteen,
+                                                    color: online,
+                                                    fontweight:
+                                                        FontWeight.bold,
                                                   ),
                                                 ),
-                                                Expanded(
-                                                  child: InkWell(
-                                                    onTap: () {
-                                                      setState(() {
-                                                        isOverLayPermission =
-                                                            false;
-                                                      });
-                                                      log('TODO: FM - Activando Buble');
-                                                      // DashBubble.instance.requestOverlayPermission();
-                                                    },
-                                                    child: MyText(
-                                                      text: languages[
-                                                              choosenLanguage][
-                                                          'text_open_settings'],
-                                                      textAlign: TextAlign.end,
-                                                      size:
-                                                          media.width * sixteen,
-                                                      color: online,
-                                                      fontweight:
-                                                          FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                )
-                                              ],
-                                            ),
-                                          ],
-                                        ),
+                                              )
+                                            ],
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                ))
-                              : Container(),
-                        ],
-                      ),
+                                    ),
+                                  ],
+                                ),
+                              ))
+                            : Container(),
+                      ],
                     );
                   },
                 ),

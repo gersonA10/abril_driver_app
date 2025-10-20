@@ -392,9 +392,7 @@ class _BottomCardSheetDriverAcceptState
                                           && (isPressed == true ||currentPositionNew ==null ||
                                                           calcularDistancia(
                                                                   currentPositionNew!,
-                                                                  fmlt.LatLng(
-                                                                      latRecoger!,
-                                                                      lonRecoger!),
+                                                                  fmlt.LatLng(driverReq['pick_lat'], driverReq['pick_lng']),
                                                                   'RECOGIDA') > 100)) 
                                                                   || ((latitudeDestino != null &&
                                                           longitudeDestino !=

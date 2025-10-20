@@ -156,7 +156,6 @@ class _BottomCardSheetState extends State<BottomCardSheet> {
                                 final pickedFile = await picker.pickImage(source: ImageSource.gallery);
 
                                 if (pickedFile != null) {
-                                  // Confirmación del usuario
                                   final confirm = await showDialog<bool>(
                                     context: context,
                                     builder: (_) => AlertDialog(

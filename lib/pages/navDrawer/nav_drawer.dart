@@ -1,3 +1,4 @@
+import 'package:abril_driver_app/pages/NavigatorPages/novedades_page.dart';
 import 'package:abril_driver_app/providers/speech_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:abril_driver_app/pages/NavigatorPages/outstation.dart';
@@ -274,6 +275,21 @@ class _NavDrawerState extends State<NavDrawer> {
                                   text: languages[choosenLanguage]
                                       ['text_enable_history'],
                                   icon: Icons.history,
+                                ),
+                              ),
+
+                              SizedBox(
+                                width: media.width * 0.7,
+                                child: NavMenu(
+                                  onTap: () {
+                                    Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                            builder: (context) =>
+                                                const NovedadesPage()));
+                                  },
+                                  text: 'Novedades',
+                                  icon: Icons.article,
                                 ),
                               ),
 

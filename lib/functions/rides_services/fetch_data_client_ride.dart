@@ -1,9 +1,7 @@
-import 'dart:developer';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/services.dart';
 import 'package:abril_driver_app/models/request_meta.dart';
 import 'package:abril_driver_app/models/requests_mode.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:rxdart/rxdart.dart';
 
 const MethodChannel _channel = MethodChannel('flutter.app/awake');
@@ -14,47 +12,18 @@ class RequestMetaService {
   RequestMetaService(this.driverId);
 
   Stream<List<RequestMeta>> getRequestMetaStream() {
-    return _ref.onValue.map((event) async {
+    return _ref.onValue.map((event) {
       List<RequestMeta> requests = [];
       if (event.snapshot.exists) {
         Map<dynamic, dynamic> data =
             event.snapshot.value as Map<dynamic, dynamic>;
 
-        bool hasRequestsForDriver = data.values.any((value) {
-          if (value['meta-drivers'] != null) {
-            Map<dynamic, dynamic> metaDrivers =
-                value['meta-drivers'] as Map<dynamic, dynamic>;
-            return metaDrivers.containsKey(driverId);
-          }
-          return false;
+        data.forEach((key, value) {
+          requests.add(RequestMeta.fromMap(value));
         });
-
-        if (hasRequestsForDriver) {
-          data.forEach((key, value) {
-            requests.add(RequestMeta.fromMap(value));
-          });
-          // log('TODO: FM openAppIfNewRequest Disabled');
-          _openAppIfNewRequest();
-        }
       }
       return requests;
-    }).asyncMap((event) => event);
-  }
-
-  Future<void> _openAppIfNewRequest() async {
-    final bool isAppInForeground =
-        await FlutterForegroundTask.isAppOnForeground;
-    if (!isAppInForeground) {
-      print('**************************************************');
-      log('TODO: FM awakeapp');
-      // log('TODO: FM awakeapp AppLifeState App #${prefs.getBool('AppLifeState')}');
-      print('**************************************************');
-      try {
-        await _channel.invokeMethod('awakeapp', {"isActive": true});
-      } on PlatformException catch (e) {
-        log("Error al intentar abrir la app: ${e.message}");
-      }
-    }
+    });
   }
 }
 
@@ -146,15 +115,3 @@ class RequestService {
     });
   }
 }
-
-
-// class DriverStatus {
-//   final DatabaseReference _ref = FirebaseDatabase.instance.ref('drivers');
-
-//   Stream<bool> getDriverAvailabilityStream(String driverId) {
-//     return _ref.child('driver_$driverId/is_avaliable').onValue.map((event) {
-//       final data = event.snapshot.value;
-//       return data == true; // Retorna true si is_avaliable es true, false en cualquier otro caso
-//     });
-//   }
-// }
