@@ -40,11 +40,25 @@ class _NavDrawerState extends State<NavDrawer> {
   double _speechRate = 0.5; // Velocidad inicial por defecto
   dynamic isCompleted;
   bool showFilter = false;
+  bool _autoMaxVolume = true;
   // ignore: unused_field
   final bool _isLoading = false;
   // ignore: unused_field
   final String _error = '';
   List myHistory = [];
+
+  Future<void> _loadAutoMaxVolume() async {
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  setState(() {
+    _autoMaxVolume = prefs.getBool('autoMaxVolume') ?? true;
+  });
+}
+
+Future<void> _saveAutoMaxVolume(bool value) async {
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  await prefs.setBool('autoMaxVolume', value);
+}
+
   navigateLogout() {
     if (ownermodule == '1') {
       Future.delayed(const Duration(seconds: 2), () {
@@ -67,6 +81,7 @@ class _NavDrawerState extends State<NavDrawer> {
   @override
   void initState() {
     _loadSpeechRate();
+    _loadAutoMaxVolume();
     historyFiltter = '';
     if (userDetails['chat_id'] != null && chatStream == null) {
       streamAdminchat();
@@ -158,35 +173,63 @@ class _NavDrawerState extends State<NavDrawer> {
                           color: newRedColor,
                         ),
                       ),
-                    Align(
+                      Align(
   alignment: Alignment.center,
   child: SizedBox(
     width: media.width * 0.7,
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    child: Column(
+      mainAxisSize: MainAxisSize.min, // 🔥 evita altura infinita
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Icon(Icons.speaker),
-        Column(
-          mainAxisAlignment: MainAxisAlignment.start,
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Consumer<SpeechProvider>(
-              builder: (context, speechProvider, child) {
-                return Slider(
-                  activeColor: theme,
-                  value: speechProvider.speechRate,
-                  min: 0.1,
-                  max: 1.0,
-                  divisions: 10,
-                  label: speechProvider.speechRate.toStringAsFixed(1),
-                  onChanged: (double value) {
-                    speechProvider.setSpeechRate(value);
-                  },
-                );
-              },
+            Icon(Icons.speaker, color: theme),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Consumer<SpeechProvider>(
+                builder: (context, speechProvider, child) {
+                  return Slider(
+                    activeColor: theme,
+                    value: speechProvider.speechRate,
+                    min: 0.1,
+                    max: 1.0,
+                    divisions: 10,
+                    label: speechProvider.speechRate.toStringAsFixed(1),
+                    onChanged: (double value) {
+                      speechProvider.setSpeechRate(value);
+                    },
+                  );
+                },
+              ),
             ),
-            Text(
-              'Velocidad de la voz',
-              style: TextStyle(fontWeight: FontWeight.bold),
+          ],
+        ),
+        Text(
+          'Velocidad de la voz',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.volume_up, color: theme),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                'Subir volumen automáticamente',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            Switch(
+              value: _autoMaxVolume,
+              activeColor: theme,
+              onChanged: (bool value) {
+                setState(() {
+                  _autoMaxVolume = value;
+                });
+                _saveAutoMaxVolume(value);
+              },
             ),
           ],
         ),
@@ -194,68 +237,6 @@ class _NavDrawerState extends State<NavDrawer> {
     ),
   ),
 ),
-
-                      // InkWell(
-                      //   onTap: () async {
-                      //     var val = await Navigator.push(
-                      //         context,
-                      //         MaterialPageRoute(
-                      //             builder: (context) => const EditProfile()));
-                      //     if (val) {
-                      //       setState(() {});
-                      //     }
-                      //   },
-                      //   child: Container(
-                      //     padding: EdgeInsets.all(media.width * 0.025),
-                      //     width: media.width * 0.7,
-                      //     decoration: BoxDecoration(
-                      //       color: theme.withOpacity(0.5),
-                      //       borderRadius: BorderRadius.circular(8),
-                      //     ),
-                      //     child: Row(
-                      //       children: [
-                      //         Container(
-                      //           width: media.width * 0.15,
-                      //           height: media.width * 0.15,
-                      //           decoration: BoxDecoration(
-                      //               borderRadius: BorderRadius.circular(8),
-                      //               image: DecorationImage(
-                      //                   image: NetworkImage(
-                      //                       userDetails['profile_picture']),
-                      //                   fit: BoxFit.cover)),
-                      //         ),
-                      //         SizedBox(
-                      //           width: media.width * 0.025,
-                      //         ),
-                      //         Expanded(
-                      //             child: Column(
-                      //           crossAxisAlignment: CrossAxisAlignment.start,
-                      //           children: [
-                      //             MyText(
-                      //               text: userDetails['name'],
-                      //               size: media.width * fourteen,
-                      //               fontweight: FontWeight.w600,
-                      //               maxLines: 1,
-                      //             ),
-                      //             MyText(
-                      //               text: userDetails['mobile'],
-                      //               size: media.width * fourteen,
-                      //               fontweight: FontWeight.w500,
-                      //               maxLines: 1,
-                      //             ),
-                      //           ],
-                      //         )),
-                      //         SizedBox(
-                      //           width: media.width * 0.025,
-                      //         ),
-                      //         Icon(
-                      //           Icons.arrow_forward_ios,
-                      //           size: media.width * 0.04,
-                      //         )
-                      //       ],
-                      //     ),
-                      //   ),
-                      // ),
 
                       // SizedBox(height: media.width*0.05,),
                       Expanded(
@@ -389,185 +370,7 @@ class _NavDrawerState extends State<NavDrawer> {
                                       })
                                   : Container(),
 
-                              // if (userDetails['show_outstation_ride_feature'] ==
-                              //     "1")
-                              //   SizedBox(
-                              //     width: media.width * 0.7,
-                              //     child: NavMenu(
-                              //       onTap: () {
-                              //         Navigator.push(
-                              //             context,
-                              //             MaterialPageRoute(
-                              //                 builder: (context) =>
-                              //                     const OutStation()));
-                              //       },
-                              //       text: languages[choosenLanguage]
-                              //           ['text_outstation'],
-                              //       icon: Icons.luggage_outlined,
-                              //     ),
-                              //   ),
-
-                              //wallet page
-
-                              // userDetails['owner_id'] == null &&
-                              //         userDetails[
-                              //                 'show_wallet_feature_on_mobile_app'] ==
-                              //             '1'
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () {
-                              //             Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const WalletPage()));
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_enable_wallet'],
-                              //           icon: Icons.payment,
-                              //         ),
-                              //       )
-                              //     : Container(),
-
-                              //Earnings
-                              // SizedBox(
-                              //   width: media.width * 0.7,
-                              //   child: NavMenu(
-                              //     onTap: () {
-                              //       Navigator.push(
-                              //           context,
-                              //           MaterialPageRoute(
-                              //               builder: (context) =>
-                              //                   const DriverEarnings()));
-                              //     },
-                              //     text: languages[choosenLanguage]
-                              //         ['text_earnings'],
-                              //     image: 'assets/images/earing.png',
-                              //   ),
-                              // ),
-
-                              //manage vehicle
-
-                              // userDetails['role'] == 'owner'
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () {
-                              //             Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const ManageVehicles()));
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_manage_vehicle'],
-                              //           image:
-                              //               'assets/images/updateVehicleInfo.png',
-                              //         ),
-                              //       )
-                              //     : Container(),
-
-                              //manage Driver
-                              // userDetails['role'] == 'owner'
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () {
-                              //             Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const DriverList()));
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_manage_drivers'],
-                              //           image: 'assets/images/managedriver.png',
-                              //         ),
-                              //       )
-                              //     : Container(),
-
-                              // //bank details
-                              // userDetails['owner_id'] == null &&
-                              //         userDetails[
-                              //                 'show_bank_info_feature_on_mobile_app'] ==
-                              //             "1"
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () {
-                              //             Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const BankDetails()));
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_updateBank'],
-                              //           icon: Icons.account_balance_outlined,
-                              //         ),
-                              //       )
-                              //     : Container(),
-
-                              // //sos
-                              // userDetails['role'] != 'owner'
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () async {
-                              //             var nav = await Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const Sos()));
-                              //             if (nav) {
-                              //               setState(() {});
-                              //             }
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_sos'],
-                              //           icon: Icons.connect_without_contact,
-                              //         ),
-                              //       )
-                              //     : Container(),
-
-                              //makecomplaints
-                              // SizedBox(
-                              //   width: media.width * 0.7,
-                              //   child: NavMenu(
-                              //     icon: Icons.toc,
-                              //     text: languages[choosenLanguage]
-                              //         ['text_make_complaints'],
-                              //     onTap: () {
-                              //       Navigator.push(
-                              //           context,
-                              //           MaterialPageRoute(
-                              //               builder: (context) =>
-                              //                   const MakeComplaint()));
-                              //     },
-                              //   ),
-                              // ),
-
-                              //settings
-                              // SizedBox(
-                              //   width: media.width * 0.7,
-                              //   child: NavMenu(
-                              //     onTap: () async {
-                              //       var nav = await Navigator.push(
-                              //           context,
-                              //           MaterialPageRoute(
-                              //               builder: (context) =>
-                              //                   const SettingsPage()));
-                              //       if (nav) {
-                              //         setState(() {});
-                              //       }
-                              //     },
-                              //     text: languages[choosenLanguage]
-                              //         ['text_settings'],
-                              //     icon: Icons.settings,
-                              //   ),
-                              // ),
-                              
+                             
                               SizedBox(
                                 width: media.width * 0.7,
                                 child: NavMenu(
@@ -584,97 +387,7 @@ class _NavDrawerState extends State<NavDrawer> {
                                 ),
                               ),
 
-                              //support
-                              // ValueListenableBuilder(
-                              //     valueListenable: valueNotifierChat.value,
-                              //     builder: (context, value, child) {
-                              //       return InkWell(
-                              //         onTap: () {
-                              //           Navigator.push(
-                              //               context,
-                              //               MaterialPageRoute(
-                              //                   builder: (context) =>
-                              //                       const SupportPage()));
-                              //         },
-                              //         child: Container(
-                              //           width: media.width * 0.7,
-                              //           padding: EdgeInsets.only(
-                              //               top: media.width * 0.07),
-                              //           child: Row(
-                              //             children: [
-                              //               Icon(Icons.support_agent,
-                              //                   size: media.width * 0.04,
-                              //                   color: textColor),
-                              //               SizedBox(
-                              //                 width: media.width * 0.025,
-                              //               ),
-                              //               Row(
-                              //                 mainAxisAlignment:
-                              //                     MainAxisAlignment.spaceBetween,
-                              //                 children: [
-                              //                   SizedBox(
-                              //                     width: (unSeenChatCount == '0')
-                              //                         ? media.width * 0.55
-                              //                         : media.width * 0.495,
-                              //                     child: MyText(
-                              //                       text:
-                              //                           languages[choosenLanguage]
-                              //                               ['text_support'],
-                              //                       overflow:
-                              //                           TextOverflow.ellipsis,
-                              //                       size: media.width * sixteen,
-                              //                       color: textColor,
-                              //                     ),
-                              //                   ),
-                              //                   (unSeenChatCount == '0')
-                              //                       ? Container()
-                              //                       : Container(
-                              //                           height: 20,
-                              //                           width: 20,
-                              //                           alignment:
-                              //                               Alignment.center,
-                              //                           decoration: BoxDecoration(
-                              //                             shape: BoxShape.circle,
-                              //                             color: buttonColor,
-                              //                           ),
-                              //                           child: Text(
-                              //                             unSeenChatCount,
-                              //                             style: GoogleFonts.notoSans(
-                              //                                 fontSize:
-                              //                                     media.width *
-                              //                                         fourteen,
-                              //                                 color: (isDarkTheme)
-                              //                                     ? Colors.black
-                              //                                     : buttonText),
-                              //                           ),
-                              //                         ),
-                              //                 ],
-                              //               )
-                              //             ],
-                              //           ),
-                              //         ),
-                              //       );
-                              //     }),
-
-                              // //referral page
-                              // userDetails['owner_id'] == null &&
-                              //         userDetails['role'] == 'driver'
-                              //     ? SizedBox(
-                              //         width: media.width * 0.7,
-                              //         child: NavMenu(
-                              //           onTap: () {
-                              //             Navigator.push(
-                              //                 context,
-                              //                 MaterialPageRoute(
-                              //                     builder: (context) =>
-                              //                         const ReferralPage()));
-                              //           },
-                              //           text: languages[choosenLanguage]
-                              //               ['text_enable_referal'],
-                              //           icon: Icons.offline_share_outlined,
-                              //         ),
-                              //       )
-                              //     : Container(),
+                             
                               SizedBox(
                                 width: media.width * 0.7,
                                 child: NavMenu(
@@ -690,27 +403,7 @@ class _NavDrawerState extends State<NavDrawer> {
                                   icon: Icons.shield_outlined,
                                 ),
                               ),
-                              // Divider(),
-                              
-                              // Divider(),
-                              // Padding(
-                              //   padding: EdgeInsets.all(20),
-                              //   child: Divider(),
-                              // ),
-                              //  Padding(
-                              //    padding: const EdgeInsets.all(8.0),
-                              //    child: ListTile(
-                              //                  title: Text('Modo Oscuro', style: TextStyle(color: Colors.black),),
-                              //                  trailing: Switch(
-                              //                    value: themeProvider.isDarkTheme,
-                              //                    onChanged: (value) {
-                              //                      themeProvider.toggleTheme(); // Cambia el tema
-                              //                    },
-                              //                  ),
-                              //                ),
-                              //  ),
                               SizedBox(
-                                // padding: EdgeInsets.only(top: 100),
                                 width: media.width * 0.7,
                                 child: NavMenu(
                                     onTap: () {

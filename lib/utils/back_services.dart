@@ -1,7 +1,8 @@
+// ignore_for_file: deprecated_member_use
+
 import 'dart:async';
 import 'dart:developer';
 import 'dart:ui';
-import 'package:abril_driver_app/functions/functions.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -11,207 +12,165 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:abril_driver_app/firebase_options.dart';
 
-Future<void> initializeService(String driverID) async {
-  FlutterBackgroundService().invoke('updateAppLifeState', {"AppLifeState": false});
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  await prefs.setString('id', driverID);
+Timer? locationTimer;
+
+const String _driverIdKey = 'driver_id';
+const String _handledRequestsKey = 'handled_requests';
+const String _lastLaunchKey = 'last_launch';
+
+Future<void> initializeService(String driverId) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_driverIdKey, driverId);
+
   final service = FlutterBackgroundService();
+
   await service.configure(
-    iosConfiguration: IosConfiguration(),
-    androidConfiguration: AndroidConfiguration(onStart: onStart, isForegroundMode: false, autoStart: true),
+    iosConfiguration: IosConfiguration(autoStart: true, onForeground: onStart),
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      isForegroundMode: false,
+      autoStart: true,
+      autoStartOnBoot: true,
+      initialNotificationTitle: 'Radio Movil 15 Adonay',
+      initialNotificationContent: 'Servicio activo',
+    ),
   );
+
+  final isRunning = await service.isRunning();
+  if (!isRunning) {
+    await service.startService();
+    log('✅ Servicio background iniciado.');
+  }
 }
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
   try {
-    await Firebase.initializeApp();
-  } catch (e) {
-    log('Error al inicializar Firebase: $e');
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  } catch (_) {}
+
+  final prefs = await SharedPreferences.getInstance();
+  final driverId = prefs.getString(_driverIdKey);
+
+  if (driverId == null) {
+    log('⚠️ Sin driverId en prefs, deteniendo servicio.');
+    service.stopSelf();
     return;
   }
-  DartPluginRegistrant.ensureInitialized();
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  if (!prefs.containsKey('id')) {
-    log('⚠️ SharedPreferences corrupto, limpiando datos...');
-    await prefs.clear(); // Borra todos los datos corruptos
-  }
 
-  if (service is AndroidServiceInstance) {
-    service.on('setAsForeground').listen((event) {
-      service.setAsForegroundService();
-    });
-    service.on('setAsBackground').listen((event) {
-      service.setAsBackgroundService();
-    });
-  }
+  _listenDriverRequests(driverId, prefs);
+  _listenAppOpenFlag(driverId, prefs);
+  _startLocationUpdates(driverId);
 
-  service.on('updateAppLifeState').listen((event) async {
-    if (event!['AppLifeState'] != null) {
-      bool appLifeState = event['AppLifeState'];
-      log('Estado de la app actualizado: $appLifeState');
-      await prefs.setBool('AppLifeState', appLifeState);
-    }
-  });
+  log('🚀 Servicio background listo (driver: $driverId)');
+}
 
-  try {
-    String? id = prefs.getString('id');
-    if (service is AndroidServiceInstance) {
-      if (await service.isForegroundService()) {
-        service.setForegroundNotificationInfo(
-          title: 'Radio Movil 15 Adonay',
-          content: 'Aplicación en ejecución',
-        );
+void _listenDriverRequests(String driverId, SharedPreferences prefs) {
+  final handled = prefs.getStringList(_handledRequestsKey) ?? [];
+
+  final ref = FirebaseDatabase.instance.ref('request-meta');
+  ref.onValue.listen((event) async {
+    if (!event.snapshot.exists) return;
+
+    final allRequests = event.snapshot.value as Map?;
+    if (allRequests == null) return;
+
+    for (final entry in allRequests.entries) {
+      final requestId = entry.key.toString();
+      final data = Map<String, dynamic>.from(entry.value);
+
+      final active = data['active'];
+      final metaDrivers = data['meta-drivers'];
+
+      final driverInMeta =
+          metaDrivers is Map && metaDrivers.containsKey(driverId);
+
+      if (driverInMeta && active == 1) {
+        if (!handled.contains(requestId)) {
+          log('📲 Nueva solicitud válida: $requestId');
+          handled.add(requestId);
+          await prefs.setStringList(_handledRequestsKey, handled);
+          await _launchAppIfNeeded(prefs);
+        } else {
+          log('⏳ Request $requestId ya procesada, ignorando.');
+        }
       }
     }
+  });
+}
 
-    startLocationUpdates(id);
-    await checkDriverRequests(id!, service, prefs);
+void _listenAppOpenFlag(String driverId, SharedPreferences prefs) {
+  final ref =
+      FirebaseDatabase.instance.ref('drivers/driver_$driverId/app_abierta');
 
-    log('Servicio en segundo plano en ejecución');
-    service.invoke('update');
+  ref.onValue.listen((event) async {
+    final val = event.snapshot.value;
+    if (val is bool && val == false) {
+      log('⚠️ app_abierta = false, relanzando app...');
+      await _launchAppIfNeeded(prefs);
+    }
+  });
+}
+
+Future<void> _launchAppIfNeeded(SharedPreferences prefs) async {
+  const pkg = 'com.deabrilconductoresdriver.driver';
+  const debounce = Duration(seconds: 5);
+
+  final lastLaunch = prefs.getInt(_lastLaunchKey) ?? 0;
+  final now = DateTime.now().millisecondsSinceEpoch;
+
+  if (now - lastLaunch < debounce.inMilliseconds) {
+    log('⏸️ Lanzamiento reciente, evitando duplicado.');
+    return;
+  }
+
+  try {
+    await AndroidIntent(
+      action: 'android.intent.action.VIEW',
+      package: pkg,
+      flags: <int>[
+        Flag.FLAG_ACTIVITY_NEW_TASK,
+        Flag.FLAG_ACTIVITY_CLEAR_TOP,
+      ],
+    ).launch();
+
+    FlutterForegroundTask.launchApp(pkg);
+    await prefs.setInt(_lastLaunchKey, now);
+    log('✅ App abierta correctamente.');
   } catch (e) {
-    log('Error en el servicio en segundo plano: $e');
+    log('❌ Error lanzando app: $e');
   }
 }
 
-// lib/utils/back_services.dart
+void _startLocationUpdates(String driverId) {
+  const interval = Duration(seconds: 10);
+  locationTimer?.cancel();
 
-Future<void> checkDriverRequests(
-    String driverId, ServiceInstance service, SharedPreferences prefs) async {
-  // 🔹 Usamos un Set para llevar un registro de las carreras ya procesadas o en proceso.
-  Set<String> processedRequests =
-      (prefs.getStringList('processedRequests') ?? []).toSet();
-
-  final DatabaseReference requestRef =
-      FirebaseDatabase.instance.ref('request-meta');
-
-  // 🔸 Usamos onChildAdded para detectar solo NUEVAS carreras.
-  final requestListener = requestRef.onChildAdded.listen((event) async {
-    if (!event.snapshot.exists || event.snapshot.value == null) return;
-
-    final carreraData = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
-    final requestId =
-        carreraData['request_id']?.toString() ?? event.snapshot.key!;
-
-    // 🔸 Si ya estamos procesando o hemos procesado esta carrera, la ignoramos.
-    if (processedRequests.contains(requestId)) {
-      log('ℹ️ Solicitud $requestId ya está en proceso o fue procesada. Ignorando.');
-      return;
-    }
-
-    log('🆕 Nueva carrera detectada: $requestId. Iniciando escucha de detalles...');
-    processedRequests.add(requestId); // Marcamos como "en proceso" inmediatamente.
-
-    StreamSubscription<DatabaseEvent>? valueListener;
-
-    // 🔸 Creamos un listener temporal con onValue para ESTA carrera específica.
-    valueListener =
-        requestRef.child(event.snapshot.key!).onValue.listen((snapshot) async {
-      if (!snapshot.snapshot.exists || snapshot.snapshot.value == null) {
-        log('⚠️ El snapshot de la carrera $requestId ya no existe.');
-        valueListener?.cancel(); // Limpiamos el listener si el nodo se borra.
-        processedRequests.remove(requestId);
-        prefs.setStringList('processedRequests', processedRequests.toList());
+  locationTimer = Timer.periodic(interval, (timer) async {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
         return;
       }
 
-      final carrera =
-          Map<dynamic, dynamic>.from(snapshot.snapshot.value as Map);
+      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
 
-      // ✅ Verificamos que todos los datos necesarios estén presentes.
-      if (carrera['meta-drivers'] != null &&
-          (carrera['meta-drivers'] as Map).containsKey(driverId) &&
-          carrera['active'] == 1) {
-        
-        log('✅ Datos completos para la carrera $requestId. Abriendo la app...');
+      final date = DateFormat('dd-MM-yyyy').format(DateTime.now());
+      final time = DateFormat('HH:mm:ss').format(DateTime.now());
 
-        // 🛑 Cancelamos el listener temporal INMEDIATAMENTE para no volver a reaccionar.
-        valueListener?.cancel();
-
-        // Lanzamos la app
-        const intent = AndroidIntent(
-          action: 'android.intent.action.VIEW',
-          package: 'com.deabrilconductoresdriver.driver',
-          flags: <int>[
-            Flag.FLAG_ACTIVITY_NEW_TASK,
-            Flag.FLAG_ACTIVITY_CLEAR_TOP,
-          ],
-        );
-
-        try {
-          await intent.launch();
-          FlutterForegroundTask.launchApp(
-              'com.deabrilconductoresdriver.driver');
-          log('📲 Aplicación abierta desde segundo plano para $requestId.');
-        } catch (e) {
-          log('❌ Error al abrir la app: $e');
-        }
-
-        // Limpiamos la solicitud de la lista de "en proceso" después de un tiempo prudencial.
-        // Esto es por si el usuario rechaza y la solicitud vuelve a aparecer.
-        Future.delayed(const Duration(minutes: 2), () {
-          processedRequests.remove(requestId);
-          prefs.setStringList('processedRequests', processedRequests.toList());
-        });
-      } else {
-        log('⏳ Esperando datos completos para la carrera $requestId...');
-      }
-    });
-
-    // 🔹 Un temporizador de seguridad por si los datos nunca llegan completos.
-    Future.delayed(const Duration(seconds: 20), () {
-      valueListener?.cancel();
-      processedRequests.remove(requestId);
-      prefs.setStringList('processedRequests', processedRequests.toList());
-      log('⌛️ Tiempo de espera agotado para la carrera $requestId. Listener cancelado.');
-    });
-  });
-
-  // Limpieza al detener el servicio
-  service.on('stop').listen((event) {
-    requestListener.cancel();
-  });
-}
-
-void startLocationUpdates(String? driverId) {
-  const LocationSettings locationSettings = LocationSettings(
-    accuracy: LocationAccuracy.best,
-    distanceFilter: 10,
-  );
-
-  locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-    Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
-
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    prefs.setDouble('currentLatitude', position.latitude);
-    prefs.setDouble('currentLongitude', position.longitude);
-
-    bool estaActivo = prefs.getBool('estaActivo') ?? false;
-    if (!estaActivo) return;
-
-    if (driverId != null) {
-      final firebase = FirebaseDatabase.instance.ref();
-      String formattedDate = DateFormat('dd-MM-yyyy').format(DateTime.now());
-      String formattedTime = DateFormat('HH:mm:ss').format(DateTime.now());
-
-      try {
-        await firebase.child('drivers/driver_$driverId').update({
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-          'updated_at': ServerValue.timestamp,
-        });
-
-        await firebase.child('historial/$driverId/$formattedDate/$formattedTime').update({
-          'lat': position.latitude,
-          'lng': position.longitude,
-        });
-
-        log('Ubicación actualizada: ${position.latitude}, ${position.longitude}');
-      } catch (e) {
-        log('Error actualizando ubicación en Firebase: $e');
-      }
-    }
+      final db = FirebaseDatabase.instance.ref();
+      await db.child('drivers/driver_$driverId').update({
+        'l': {'0': pos.latitude, '1': pos.longitude},
+        'updated_at': ServerValue.timestamp,
+      });
+      await db.child('historial/$driverId/$date/$time').set({'lat': pos.latitude, 'lng': pos.longitude});
+   
   });
 }

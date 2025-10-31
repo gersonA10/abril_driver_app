@@ -13,7 +13,7 @@ class DropProvider extends ChangeNotifier {
   // double? latitudeDestino;
   // double? longitudeDestino;
 
-  void handleDrop(String requestId, double latDestino, double longDestino) async {
+void handleDrop(String requestId, double latDestino, double longDestino) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     requestService.getDriverIdStream(requestId).listen((driverId) async {
       if (driverId != userDetails['id'].toString()) {
@@ -22,11 +22,17 @@ class DropProvider extends ChangeNotifier {
       }
       try {
         if (latRecoger != null && latitudeDestino != null) {
+          // 💡 Añadir guardia por si driverReq está vacío
+          if (driverReq.isEmpty) {
+            print("driverReq está vacío, no se puede obtener la API key.");
+            return;
+          }
           List<LatLng> points = await getRouteFromGraphHopper(
             latRecoger!,
             lonRecoger!,
             latitudeDestino!,
             longitudeDestino!,
+            apiKey: driverReq['api_key_trazado_ruta'], // 💡 USAR API KEY
           );
           routePointsDestino = points;
           await guardarPuntosRutaDestino(routePointsDestino);
@@ -41,7 +47,6 @@ class DropProvider extends ChangeNotifier {
       }
     });
   }
-
   Future<void> guardarPuntosRutaDestino(List<LatLng> puntos) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
 

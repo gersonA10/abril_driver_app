@@ -1,4 +1,6 @@
 // import 'dart:developer';
+import 'dart:developer';
+
 import 'package:abril_driver_app/firebase_options.dart';
 import 'package:abril_driver_app/providers/handle_drop.dart';
 import 'package:abril_driver_app/providers/speech_provider.dart';
@@ -11,9 +13,11 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'functions/functions.dart';
 import 'functions/notifications.dart';
 import 'pages/loadingPage/loadingpage.dart';
@@ -24,11 +28,53 @@ import 'dart:io';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-// Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-//   if (message.notification!.title!.contains('Nuevo') || message.notification!.title!.contains('Nuevo mensaje de')) {
-//     DeviceApps.openApp('com.deabrilconductoresdriver.driver'); 
-//   }
-// }
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  log("📩 Mensaje recibido en background: ${message.data}");
+
+  // Detectar si el mensaje es de chat
+  bool isChat = message.data['push_type'] == 'chat' ||
+      (message.notification?.title?.contains('Nuevo mensaje de') ?? false);
+
+  if (isChat) {
+    log("💬 Es un mensaje de chat, intentando abrir la app...");
+
+    // Guardar preferencia para manejar lógica al abrir
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('pendingChatNavigationFromService', true);
+
+    // Intent para abrir tu aplicación
+    const intent = AndroidIntent(
+      action: 'android.intent.action.MAIN',
+      category: 'android.intent.category.LAUNCHER',
+      package: 'com.deabrilconductoresdriver.driver', // tu package real
+      flags: <int>[
+        Flag.FLAG_ACTIVITY_NEW_TASK,
+        Flag.FLAG_ACTIVITY_CLEAR_TOP,
+      ],
+    );
+
+    try {
+      await intent.launch();
+      log("🚀 App abierta exitosamente desde el background handler.");
+    } catch (e) {
+      log("❌ Error al abrir la app: $e");
+    }
+
+    // Alternativa adicional (para algunos OEMs)
+    try {
+      FlutterForegroundTask.launchApp('com.deabrilconductoresdriver.driver');
+    } catch (e) {
+      log("⚠️ launchApp fallback falló: $e");
+    }
+  } else {
+    log("📨 No es un mensaje de chat. Ignorado.");
+  }
+}
 
 // @pragma('vm:entry-point')
 // void callbackDispatcher() {
@@ -68,7 +114,9 @@ void requestBatteryOptimizations() async {
 Future main() async {
   WidgetsFlutterBinding.ensureInitialized();
     try {
-    await Firebase.initializeApp();
+      await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (e) {
     print("Error al inicializar Firebase: $e");
   }
@@ -89,7 +137,7 @@ Future main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   initMessaging();
-  // FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   checkInternetConnection();
 
   currentPositionUpdate();

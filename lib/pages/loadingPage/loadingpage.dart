@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:abril_driver_app/main.dart';
+import 'package:abril_driver_app/pages/chatPage/chat_page.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:abril_driver_app/pages/onTripPage/map_page.dart';
@@ -132,6 +134,15 @@ class _LoadingPageState extends State<LoadingPage> {
         if (internet == true) {
           var val = await getLocalData();
 
+          if (pendingChatNavigation == true) { 
+              pendingChatNavigation = false;
+              if (isInChatPage == false) {
+                isInChatPage = true;
+                navigatorKey.currentState?.push(MaterialPageRoute(builder: (context) => const ChatPage())).then((_) {
+                  isInChatPage = false;
+                });
+              }
+            }
           //if user is login and check waiting for approval status and send accordingly
           if (val == '3') {
             navigate();

@@ -5,6 +5,7 @@ import 'dart:developer';
 import 'dart:ui' as ui;
 import 'dart:ui';
 // import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
+import 'package:abril_driver_app/providers/speech_provider.dart';
 import 'package:abril_driver_app/widgets/widget_image.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
@@ -90,6 +91,7 @@ fmlt.LatLng? previousPosition;
 fmlt.LatLng? startPoint;
 fmlt.LatLng? endPoint;
 List<fmlt.LatLng> routePoints = [];
+
 
 bool locationAllowed = false;
 
@@ -209,6 +211,8 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
 
   String? nombreUsuario;
 
+  RequestMeta? requestParaAceptar;
+
   AudioService audioService = AudioService();
   RequestMetaService requestMetaService =
       RequestMetaService(userDetails['id'].toString());
@@ -290,26 +294,67 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
   fmlt.LatLng? posicionActual;
   bool audioPlayed = false;
 
-  Future<void> cargarPuntosRuta() async {
+Future<void> cargarPuntosRuta() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-
-    // Obtener la cadena JSON desde SharedPreferences
     String? puntosJson = prefs.getString('puntosRuta');
-
     if (puntosJson != null) {
-      // Decodificar la cadena JSON a una lista de mapas
       List<dynamic> listaPuntos = jsonDecode(puntosJson);
-
-      // Convertir la lista de mapas a una lista de objetos LatLng
       List<fmlt.LatLng> puntos = listaPuntos
           .map((punto) => fmlt.LatLng(punto['latitude'], punto['longitude']))
           .toList();
-
-      // Asignar los puntos cargados a `routePoints`
-      setState(() {
-        routePoints = puntos;
-      });
+      
+      if (mounted) {
+        setState(() {
+          routePoints = puntos;
+        });
+      }
     }
+  }
+
+Future<void> handleRequestAccept(String requestId, double lat, double lng, String? apiKey,   {BuildContext? dialogContext}) async { 
+    try {
+      if (currentPositionNew == null) {
+        debugPrint('Error: No se pudo obtener la posición actual para trazar la ruta.');
+        return; 
+      }
+      
+      final points = await getRouteFromGraphHopper(
+        currentPositionNew!.latitude,
+        currentPositionNew!.longitude,
+        lat,
+        lng,
+        apiKey: apiKey, 
+      );
+      await guardarPuntosRuta(points);
+      
+      // 💡 *** SOLUCIÓN 1: AÑADIR ESTO ***
+      // Actualiza la variable de estado para que el mapa la dibuje.
+      if (mounted) {
+        setState(() {
+          routePoints = points;
+        });
+      }
+      // 💡 *** FIN SOLUCIÓN 1 ***
+
+      final res = await requestAccept(requestId);
+      if (res == 'success') {
+        final speechProvider = Provider.of<SpeechProvider>(context, listen: false);
+        speechProvider.flutterTts.speak('Aceptaste el viaje, recoge a tu pasajero');
+      }
+    } catch (e) {
+      debugPrint('Error al aceptar: $e');
+    } finally {
+      if (dialogContext != null && Navigator.canPop(dialogContext)) {
+        Navigator.of(dialogContext, rootNavigator: true).pop();
+      }
+    }
+  }
+
+  // 💡 NUEVO: Mover guardarPuntosRuta de show_rides.dart aquí
+  Future<void> guardarPuntosRuta(List<fmlt.LatLng> puntos) async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonPoints = puntos.map((p) => {'latitude': p.latitude, 'longitude': p.longitude}).toList();
+    await prefs.setString('puntosRuta', jsonEncode(jsonPoints));
   }
 
   Future<void> cargarLatLonDestino() async {
@@ -1092,13 +1137,13 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
     });
   }
 
-  void listenToRequestMeta() {
-    int driverId = userDetails['id'];
-    requestMetaService.getRequestMetaStream().listen((newRequestMetas) {
-      _messageSubscriptions.forEach((key, subscription) => subscription.cancel());
-      _messageSubscriptions.clear();
+void listenToRequestMeta() {
+  int driverId = userDetails['id'];
+  requestMetaService.getRequestMetaStream().listen((newRequestMetas) {
+    _messageSubscriptions.forEach((key, subscription) => subscription.cancel());
+    _messageSubscriptions.clear();
 
-       setState(() {
+    setState(() {
       // Filtra las carreras como ya lo haces
       requestMetas = newRequestMetas.where((meta) {
         return meta.metaDrivers.containsKey(driverId) &&
@@ -1108,10 +1153,21 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
       for (var meta in requestMetas) {
         if (!_anunciosReproducidos.contains(meta.requestId)) {
           log('📢 Nueva carrera ${meta.requestId} no anunciada. Reproduciendo sonido...');
-
-          audioService.audioPlay('Nueva carrera disponible en ${meta.textoZona}'); 
-
+          audioService.audioPlay(meta.textoZona);
           _anunciosReproducidos.add(meta.requestId);
+        }
+      }
+
+      if (mostrarRutaDobleTap == true && requestIdDoubleTapUser != null) {
+        bool isStillAvailable = requestMetas.any((meta) => meta.requestId == requestIdDoubleTapUser);
+        if (!isStillAvailable) {
+          mostrarRutaDobleTap = false;
+          routePoints.clear();
+          final dropProvider = Provider.of<DropProvider>(context, listen: false);
+          dropProvider.mostrardDibujadoDestino = false;
+          dropProvider.routePointsDestino.clear();
+          requestIdDoubleTapUser = null;
+          log('ℹ️ Vista previa de ruta limpiada porque fue aceptada por otro conductor o cancelada.');
         }
       }
 
@@ -1122,16 +1178,16 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
         _anunciosReproducidos.clear();
       }
     });
-      for (var meta in requestMetas) {
-        String requestId = meta.requestId;
 
-        listenToRequests(requestId);
-        listenMessages(requestId);
-        listenClienteConfirmado(requestId);
-        listenCancellRides(requestId);
-      }
-    });
-  }
+    for (var meta in requestMetas) {
+      String requestId  = meta.requestId;
+      listenToRequests(requestId);
+      listenMessages(requestId);
+      listenClienteConfirmado(requestId);
+      listenCancellRides(requestId);
+    }
+  });
+}
 
   void listenClienteConfirmado(String requestId) {
     confirmacionSubscription =
@@ -1175,22 +1231,25 @@ class _MapsState extends State<Maps> with WidgetsBindingObserver, TickerProvider
 
 
 void _navigateToChat() {
-  if (isInChatPage == false) {
-    isInChatPage = true; 
-    log('🗺️ Navegando al chat...');
-    navigatorKey.currentState
-        ?.push(MaterialPageRoute(builder: (context) => const ChatPage()))
-        .then((_) {
-      // Este bloque se ejecuta SIEMPRE al volver de la página de Chat.
-      log('🔙 Regresando del chat. Reseteando estado para futuros mensajes.');
-      if (mounted) {
-         isInChatPage = false; // Permitimos que se vuelva a abrir
-      }
-    });
-  } else {
-    log('⚠️ Intento de abrir el chat mientras ya estaba abierto. Ignorando.');
+    // Comprueba si ya estás en la página de chat
+    if (isInChatPage == false) {
+      isInChatPage = true; // Marca que estás entrando al chat
+      log('🗺️ Detectado cambio en nro_mensajes_cliente. Navegando al chat...');
+      
+      // Usa el navigatorKey global para abrir la página de chat
+      navigatorKey.currentState
+          ?.push(MaterialPageRoute(builder: (context) => const ChatPage()))
+          .then((_) {
+        // Esto se ejecuta cuando regresas (sales) de la página de chat
+        log('🔙 Regresando del chat. Reseteando estado.');
+        if (mounted) {
+          isInChatPage = false; // Permite que se vuelva a abrir la próxima vez
+        }
+      });
+    } else {
+      log('⚠️ Intento de abrir el chat mientras ya estaba abierto. Ignorando.');
+    }
   }
-}
 
   void listenCancellRides(String requestId) async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -1435,31 +1494,31 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     }
   }
 
-  getPoly() async {
-    fmpoly.clear();
-    for (var i = 1; i < addressList.length; i++) {
-      var api = await http.get(Uri.parse(
-          'https://routing.openstreetmap.de/routed-car/route/v1/driving/${addressList[i - 1].latlng.longitude},${addressList[i - 1].latlng.latitude};${addressList[i].latlng.longitude},${addressList[i].latlng.latitude}?overview=false&geometries=polyline&steps=true'));
-      if (api.statusCode == 200) {
-        // ignore: no_leading_underscores_for_local_identifiers
-        List _poly = jsonDecode(api.body)['routes'][0]['legs'][0]['steps'];
-        polyline.clear();
-        for (var e in _poly) {
-          decodeEncodedPolyline(e['geometry']);
-        }
-        double lat = (addressList[0].latlng.latitude +
-                addressList[addressList.length - 1].latlng.latitude) /
-            2;
-        double lon = (addressList[0].latlng.longitude +
-                addressList[addressList.length - 1].latlng.longitude) /
-            2;
-        var val = LatLng(lat, lon);
-        // TODO: FM - Cambiar a LatLng
-        _fmController.move(fmlt.LatLng(val.latitude, val.longitude), 15);
-        setState(() {});
-      }
-    }
-  }
+  // getPoly() async {
+  //   fmpoly.clear();
+  //   for (var i = 1; i < addressList.length; i++) {
+  //     var api = await http.get(Uri.parse(
+  //         'https://routing.openstreetmap.de/routed-car/route/v1/driving/${addressList[i - 1].latlng.longitude},${addressList[i - 1].latlng.latitude};${addressList[i].latlng.longitude},${addressList[i].latlng.latitude}?overview=false&geometries=polyline&steps=true'));
+  //     if (api.statusCode == 200) {
+  //       // ignore: no_leading_underscores_for_local_identifiers
+  //       List _poly = jsonDecode(api.body)['routes'][0]['legs'][0]['steps'];
+  //       polyline.clear();
+  //       for (var e in _poly) {
+  //         decodeEncodedPolyline(e['geometry']);
+  //       }
+  //       double lat = (addressList[0].latlng.latitude +
+  //               addressList[addressList.length - 1].latlng.latitude) /
+  //           2;
+  //       double lon = (addressList[0].latlng.longitude +
+  //               addressList[addressList.length - 1].latlng.longitude) /
+  //           2;
+  //       var val = LatLng(lat, lon);
+  //       // TODO: FM - Cambiar a LatLng
+  //       _fmController.move(fmlt.LatLng(val.latitude, val.longitude), 15);
+  //       setState(() {});
+  //     }
+  //   }
+  // }
 
   addMarkers() {
     if (mapType == 'google') {
@@ -1469,7 +1528,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
     } else {
       fmpoly.clear();
       Future.delayed(const Duration(milliseconds: 200), () {
-        getPoly();
+        // getPoly();
       });
     }
   }
@@ -1906,6 +1965,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
 
   GeoHasher geo = GeoHasher();
   bool restartState = true;
+  
 
   @override
   Widget build(BuildContext context) {
@@ -2114,6 +2174,19 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                   _pickAnimateDone = false;
                 }
               }
+            }
+
+            if (driverReq.isNotEmpty && 
+                driverReq['accepted_at'] != null && 
+                routePoints.isEmpty && 
+                mostrarRutaDobleTap == false) {
+              
+              // Cargar la ruta que se guardó en SharedPreferences
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if(mounted) { // Asegurarse que el widget esté montado
+                   cargarPuntosRuta();
+                }
+              });
             }
 
             if (userDetails['approve'] == false && driverReq.isEmpty) {
@@ -3167,7 +3240,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                   ),
                                                                 ),
                                                                 if (driverReq['accepted_at'] != null &&
-                                                                    driverReq['is_driver_arrived'] != 1 &&
                                                                     driverReq['is_trip_start'] != 1)
                                                                   fm.PolylineLayer(
                                                                     polylines: [
@@ -3178,27 +3250,28 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                       ),
                                                                     ],
                                                                   ),
-                                                                if (endPoint != null &&
-                                                                    driverReq['accepted_at'] != null &&
-                                                                    driverReq['is_trip_start'] != 1)
-                                                                  fm.MarkerLayer(
-                                                                    markers: [
-                                                                      fm.Marker(
-                                                                        rotate: true,
-                                                                        width: 60,
-                                                                        height: 60,
-                                                                        point: endPoint!,
-                                                                        child: ClipOval(
-                                                                          child: Image.asset(
-                                                                            themeProvider.isDarkTheme
-                                                                                ? 'assets/gifs/icon-user2.gif'
-                                                                                : 'assets/gifs/icon-user1.gif',
-                                                                            fit: BoxFit.contain,
-                                                                          ),
-                                                                        ),
-                                                                      )
-                                                                    ],
-                                                                  ),
+                                                                // if (endPoint != null &&
+                                                                //     driverReq['accepted_at'] != null &&
+                                                                //     driverReq['is_trip_start'] != 1)
+                                                                //   fm.MarkerLayer(
+                                                                //     markers: [
+                                                                //       fm.Marker(
+                                                                //         rotate: true,
+                                                                //         width: 80,
+                                                                //         height: 80,
+                                                                //          alignment: Alignment.topCenter,
+                                                                //         point: endPoint!,
+                                                                //         child: ClipOval(
+                                                                //           child: Image.asset(
+                                                                //             themeProvider.isDarkTheme
+                                                                //                 ? 'assets/gifs/icon-user2.gif'
+                                                                //                 : 'assets/gifs/icon-user1.gif',
+                                                                //             fit: BoxFit.contain,
+                                                                //           ),
+                                                                //         ),
+                                                                //       )
+                                                                //     ],
+                                                                //   ),
                                                                 if (routePoints.isNotEmpty && mostrarRutaDobleTap == true)
                                                                   fm.PolylineLayer(
                                                                     polylines: [
@@ -3240,40 +3313,38 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                         ),
                                                                       ),
                                                                     // if (showLocationRide == true && showRequestsOverlay == false)
-                                                                    if (driverReq['accepted_at'] != null && driverReq['is_driver_arrived'] != 1)
+                                                                    if (driverReq['accepted_at'] != null && driverReq['is_trip_start'] != 1)
                                                                       fm.Marker(
                                                                         rotate: true,
-                                                                        width: media.width * 0.8,
-                                                                        height: media.height * 0.1,
+                                                                        width: 70, 
+                                                                        height: 70,
                                                                         alignment: Alignment.topCenter,
                                                                         point: fmlt.LatLng(driverReq['pick_lat'], driverReq['pick_lng']),
                                                                         child: Column(
                                                                           children: [
-                                                                            Container(
-                                                                              padding: const EdgeInsets.all(5),
-                                                                              decoration: BoxDecoration(
-                                                                                gradient: LinearGradient(
-                                                                                  colors: isDarkTheme
-                                                                                      ? [Color(0xff000000), Color(0xff808080)]
-                                                                                      : [Color(0xffFFFFFF), Color(0xffEFEFEF)],
-                                                                                  begin: Alignment.topCenter,
-                                                                                  end: Alignment.bottomCenter,
-                                                                                ),
-                                                                                borderRadius: BorderRadius.circular(5),
-                                                                              ),
-                                                                              child: Text(
-                                                                                nombreUsuario ?? '',
-                                                                                style: GoogleFonts.notoSans(
-                                                                                  color: textColor,
-                                                                                  fontSize: media.width *
-                                                                                      (platform == TargetPlatform.android ? ten : twelve),
-                                                                                ),
-                                                                              ),
-                                                                            ),
-                                                                            const SizedBox(height: 10),
+                                                                            // Container(
+                                                                            //   decoration: BoxDecoration(
+                                                                            //     gradient: LinearGradient(
+                                                                            //       colors: isDarkTheme
+                                                                            //           ? [Color(0xff000000), Color(0xff808080)]
+                                                                            //           : [Color(0xffFFFFFF), Color(0xffEFEFEF)],
+                                                                            //       begin: Alignment.topCenter,
+                                                                            //       end: Alignment.bottomCenter,
+                                                                            //     ),
+                                                                            //     borderRadius: BorderRadius.circular(5),
+                                                                            //   ),
+                                                                            //   child: Text(
+                                                                            //     nombreUsuario ?? '',
+                                                                            //     style: GoogleFonts.notoSans(
+                                                                            //       color: textColor,
+                                                                            //       fontSize: media.width *
+                                                                            //           (platform == TargetPlatform.android ? ten : twelve),
+                                                                            //     ),
+                                                                            //   ),
+                                                                            // ),
                                                                             SizedBox(
-                                                                              width: media.width * 0.1,
-                                                                              height: media.width * 0.1,
+                                                                              width: 70,
+                                                                              height:70,
                                                                               child: ClipOval(
                                                                                 child: Image.asset(
                                                                                   themeProvider.isDarkTheme
@@ -3341,13 +3412,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                   media:
                                                                       media),
                                                       //*ESTE BOTON TIENE QUE ABRIR EL OSMAND DE LA RECOGIDA
-                                                      (driverReq['accepted_at'] ==
-                                                              null)
-                                                          ? Container()
-                                                          : PickUpOpenMap(
-                                                              acceptDriverBottomSheetOffset:
-                                                                  acceptDriverBottomSheetOffset,
-                                                              media: media),
+                                                      
                                                       const SizedBox(
                                                         height: 10,
                                                       ),
@@ -3406,16 +3471,12 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                               null)
                                                           ? Container()
                                                           : ValueListenableBuilder(
-                                                              valueListenable:
-                                                                  acceptDriverBottomSheetOffset,
+                                                              valueListenable:  acceptDriverBottomSheetOffset,
                                                               builder:
                                                                   (context,
                                                                       offset,
                                                                       child) {
-                                                                double
-                                                                    bottomPadding =
-                                                                    915 *
-                                                                        (offset);
+                                                               
                                                                 return Container(
                                                                   decoration: BoxDecoration(
                                                                       boxShadow: [
@@ -3442,7 +3503,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                           if (mapType == 'google') {
                                                                             _controller?.animateCamera(CameraUpdate.newLatLngZoom(centerPosition!, 18.0));
                                                                           } else {
-                                                                            // TODO: FM GPS Controller
+                                                                            // FIXME: FM GPS Controller
                                                                             // print('TODO FM Current LATITUDE: ${currentPositionNew?.latitude}, LONGITUDE: ${currentPositionNew?.longitude}');
                                                                             _fmController.move(fmlt.LatLng(currentPositionNew!.latitude, currentPositionNew!.longitude), _fmController.camera.zoom);
                                                                           }
@@ -3476,9 +3537,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                             media.width * 0.1,
                                                                         width:
                                                                             media.width * 0.1,
-                    
-                                                                        // alignment:
-                                                                        //     Alignment.center,
                                                                         child:
                                                                             Icon(
                                                                           Icons.my_location_sharp,
@@ -3492,6 +3550,17 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                                   ),
                                                                 );
                                                               }),
+                                                        const SizedBox(
+                                                        height: 10,
+                                                      ),
+                                                       (driverReq['accepted_at'] ==  null)
+                                                       ? Container()
+                                                       : ValueListenableBuilder(
+                                                         valueListenable: acceptDriverBottomSheetOffset,
+                                                         builder: (context, value, child) {
+                                                           return PickUpOpenMap(media: media);
+                                                         }
+                                                       ),
                                                        const SizedBox(
                                                         height: 10,
                                                       ),
@@ -4263,23 +4332,21 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                       ? Container()
                                                       : ShowRides(
                                                          onDoubleTap: (int index) async {
-                                                        // 1. Mostrar un indicador de carga
-                                                        setState(() {
-                                                          estaCargando = true;
-                                                        });
+                                                          final requestMeta = requestMetas[index];
+                                                          setState(() {
+                                                            estaCargando = true;
+                                                          });
 
                                                         try {
                                                           final requestMeta = requestMetas[index];
 
-                                                          // Asegurarse de que tenemos la posición actual
                                                           if (currentPositionNew == null) {
                                                             ScaffoldMessenger.of(context).showSnackBar(
                                                               const SnackBar(content: Text('No se pudo obtener la ubicación actual.')),
                                                             );
-                                                            return; // Salir si no hay ubicación
+                                                            return; 
                                                           }
 
-                                                          // 2. Obtener la ruta de forma segura (await)
                                                           final pointsToPickup = await getRouteFromGraphHopper(
                                                               currentPositionNew!.latitude,
                                                               currentPositionNew!.longitude,
@@ -4297,6 +4364,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
 
                                                           // 3. Actualizar el estado CON TODA la información ya lista
                                                           setState(() {
+                                                            requestParaAceptar = requestMeta;
                                                             mostrarRutaDobleTap = true;
                                                             routePoints = pointsToPickup; // Ruta al punto de recogida
 
@@ -4328,6 +4396,30 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                           });
                                                         }
                                                       },
+                                                      onAccept: (RequestMeta request) async {
+                            // Mostrar diálogo desde map_page
+                            showDialog(
+                              context: context,
+                              barrierDismissible: false,
+                              builder: (BuildContext context) {
+                                return _AceptandoViajeDialog();
+                              },
+                            );
+                            
+                            try {
+                              // Llamar a la función handleRequestAccept de _MapsState
+                              await handleRequestAccept(
+                                request.requestId,
+                                request.recogidaLat!,
+                                request.recogidaLong!,
+                                request.apiKeyTrazadoRuta,
+                                dialogContext: context, // Pasar el contexto del diálogo
+                              );
+                            } catch (e) {
+                              debugPrint("Error in onAccept handleRequestAccept: $e");
+                            } 
+                            // El diálogo se cierra dentro de handleRequestAccept
+                          },
                                                           rejectedRides: rejectedRides,
                                                           listRequests: requestMetas,
                                                           media: media,
@@ -4337,7 +4429,64 @@ void didChangeAppLifecycleState(AppLifecycleState state) async {
                                                             });
                                                           },
                                                         ),
-                    
+                                                Positioned(
+                                                  bottom: 250, // Ajusta esta posición según sea necesario
+                                                  left: 0,
+                                                  right: 0,
+                                                  child: Visibility(
+                                                    visible: mostrarRutaDobleTap,
+                                                    child: Center(
+                                                      child: ElevatedButton(
+                                                        style: ElevatedButton.styleFrom(
+                                                          backgroundColor: newRedColor,
+                                                          foregroundColor: Colors.white,
+                                                          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                                                          textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                                        ),
+                                                        onPressed: () async {
+                                                          if (requestParaAceptar != null) {
+                                                            showDialog(
+                                                          context: context,
+                                                          barrierDismissible: false,
+                                                          builder: (BuildContext context) {
+                                                            return _AceptandoViajeDialog(); 
+                                                          },
+                                                        );
+                                                            setState(() {
+                                                              estaCargando = true; 
+                                                            });
+                                                            
+                                                            try {
+                                                            await handleRequestAccept(
+                                                              requestParaAceptar!.requestId,
+                                                              requestParaAceptar!.recogidaLat!,
+                                                              requestParaAceptar!.recogidaLong!,
+                                                              requestParaAceptar!.apiKeyTrazadoRuta,
+                                                            );
+                                                          } catch (e) {
+                                                            debugPrint("Error en handleRequestAccept: $e");
+                                                          } finally {
+                                                            Navigator.pop(context); 
+                                                            
+                                                            if (mounted) {
+                                                              setState(() {
+                                                                estaCargando = false; 
+                                                                mostrarRutaDobleTap = false;
+                                                                requestParaAceptar = null;
+                                                                routePoints.clear();
+                                                                final dropProvider = Provider.of<DropProvider>(context, listen: false);
+                                                                dropProvider.mostrardDibujadoDestino = false;
+                                                                dropProvider.routePointsDestino.clear();
+                                                              });
+                                                            }
+                                                          }
+                                                          }
+                                                        },
+                                                        child: const Text('Aceptar Viaje'),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
                                                 if (estaCargando)
                                                   Container(
                                                     height: media.height * 1,
@@ -7207,4 +7356,25 @@ List decodeEncodedPolyline(String encoded) {
     );
   }
   return fmpoly;
+}
+
+
+
+class _AceptandoViajeDialog extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: Colors.white,
+      content: Row(
+        children: [
+          CircularProgressIndicator(color: newRedColor),
+          SizedBox(width: 20),
+          Text(
+            "Aceptando viaje...",
+            style: GoogleFonts.montserrat(color: Colors.black),
+          ),
+        ],
+      ),
+    );
+  }
 }

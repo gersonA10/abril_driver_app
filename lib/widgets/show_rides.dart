@@ -28,6 +28,7 @@ class ShowRides extends StatefulWidget {
     this.onTap,
     required this.rejectedRides,
     this.onDoubleTap,
+    this.onAccept,
   }) : super(key: key);
 
   final List<RequestMeta> listRequests;
@@ -35,6 +36,7 @@ class ShowRides extends StatefulWidget {
   final VoidCallback? onTap;
   final Function(int index)? onDoubleTap;
   final List<String> rejectedRides;
+  final Function(RequestMeta request)? onAccept;
 
   @override
   _ShowRidesState createState() => _ShowRidesState();
@@ -121,6 +123,7 @@ class _ShowRidesState extends State<ShowRides> {
           height: widget.media.height,
           color: Colors.black.withOpacity(0.5),
           child: ListView.builder(
+            // reverse: true,
             padding: EdgeInsets.symmetric(vertical: widget.media.height * 0.2),
             itemCount: widget.listRequests.length + 1,
             itemBuilder: (context, idx) {
@@ -139,6 +142,10 @@ class _ShowRidesState extends State<ShowRides> {
                   ),
                 );
               }
+
+              final reversedIndex = widget.listRequests.length - 1 - idx;
+              final request = widget.listRequests[reversedIndex];
+             
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
                 child: GestureDetector(
@@ -163,8 +170,8 @@ class _ShowRidesState extends State<ShowRides> {
                         context,
                         widget.listRequests[idx],
                         _placeDestinations.isNotEmpty && idx < _placeDestinations.length ? _placeDestinations[idx] : 'Cargando...',
-                        '${widget.listRequests[idx].metaDrivers[driverId]?.tiempoMin ?? ''} min',
-                        '${widget.listRequests[idx].metaDrivers[driverId]?.distanciaKm ?? ''} km',
+                         '${request.metaDrivers[driverId]?.tiempoMin ?? ''} min',
+                      '${request.metaDrivers[driverId]?.distanciaKm ?? ''} km',
                       ),
                     ),
                   ),
@@ -186,52 +193,46 @@ class _ShowRidesState extends State<ShowRides> {
     });
   }
 
-  void _onDragEnd(int idx, DragEndDetails details, DropProvider dropProvider) async {
-    final prefs = await SharedPreferences.getInstance();
+void _onDragEnd(int idx, DragEndDetails details, DropProvider dropProvider) async {
     if (_cardOffsets[idx] < -150) {
       final req = widget.listRequests[idx];
-      await handleRequestAccept(req.requestId, req.recogidaLat!, req.recogidaLong!);
+
+      if (!mounted) return;
+      
+      // 💡 LLAMAR AL CALLBACK DE map_page.dart
+      widget.onAccept?.call(req);
+
+      // Resetear estado local
+      setState(() {
+        _cardOffsets[idx] = 0;
+        _cardColors[idx] = _themeProvider.isDarkTheme
+            ? Colors.grey[800]!
+            : Colors.white;
+      });
+
     } else if (_cardOffsets[idx] > 150) {
       widget.rejectedRides.add(widget.listRequests[idx].requestId);
       widget.listRequests.removeAt(idx);
     }
+
+    if (!mounted) return;
     setState(() {
       _cardOffsets[idx] = 0;
-      _cardColors[idx] = _themeProvider.isDarkTheme ? Colors.grey[800]! : Colors.white;
+      _cardColors[idx] = _themeProvider.isDarkTheme
+          ? Colors.grey[800]!
+          : Colors.white;
     });
   }
 
-  Future<void> handleRequestAccept(String requestId, double lat, double lng) async {
-    try {
-      final points = await getRouteFromGraphHopper(
-        currentPositionNew!.latitude,
-        currentPositionNew!.longitude,
-        lat,
-        lng,
-      );
-      await guardarPuntosRuta(points);
-      final res = await requestAccept(requestId);
-      if (res == 'success') {
-        final speechProvider = Provider.of<SpeechProvider>(context, listen: false);
-        speechProvider.flutterTts.speak('Aceptaste el viaje, recoge a tu pasajero');
-      }
-    } catch (e) {
-      debugPrint('Error al aceptar: $e');
-    }
-  }
 
-  Future<void> guardarPuntosRuta(List<LatLng> puntos) async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonPoints = puntos.map((p) => {'latitude': p.latitude, 'longitude': p.longitude}).toList();
-    await prefs.setString('puntosRuta', jsonEncode(jsonPoints));
-  }
+
 
   Widget buildRideCard(BuildContext context, RequestMeta data, String destination,
       String duration, String distance) {
     final isDark = _themeProvider.isDarkTheme;
     return Card(
       elevation: 2,
-      color: isDark ? Colors.grey[850] : Colors.white,
+      color: data.colorLlamada ?? (isDark ? Colors.grey[850] : Colors.white),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
@@ -246,7 +247,7 @@ class _ShowRidesState extends State<ShowRides> {
                     style: GoogleFonts.montserrat(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.black,
+                      color: data.colorTexto  ?? (isDark ? Colors.white : Colors.black),
                     ),
                   ),
                 ),
@@ -254,7 +255,7 @@ class _ShowRidesState extends State<ShowRides> {
                   '$duration | $distance',
                   style: TextStyle(
                     fontSize: 14,
-                    color: isDark ? Colors.white70 : Colors.black54,
+                    color: data.colorTexto ?? (isDark ? Colors.white70 : Colors.black) ,
                   ),
                 ),
               ],
@@ -262,12 +263,12 @@ class _ShowRidesState extends State<ShowRides> {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Icon(Icons.location_on, size: 20),
+                 Icon(Icons.location_on, size: 20, color: data.colorTexto ?? (isDark ? Colors.white70 : Colors.black),),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    data.textoZona,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    data.textoZonaDescriptivo,
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: data.colorTexto ?? (isDark ? Colors.white70 : Colors.black) ,),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),

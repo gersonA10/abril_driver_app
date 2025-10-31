@@ -14,6 +14,7 @@ class Request {
   final double? lat;
   final double? lng;
   final int? messageByUser;
+  final String? apiKeyTrazadoRuta;
 
   Request({
     required this.requestId,
@@ -30,6 +31,7 @@ class Request {
     this.lat,
     this.lng,
     this.messageByUser,
+    this.apiKeyTrazadoRuta,
   });
 
   // Compara todos los atributos excepto lat y lng
@@ -66,6 +68,7 @@ class Request {
       lat: map['lat'] != null ? map['lat'] as double? : null,
       lng: map['lng'] != null ? map['lng'] as double? : null,
       messageByUser: map['nro_mensajes_cliente'] ?? 0,
+      apiKeyTrazadoRuta: map['api_key_trazado_ruta'],
     );
   }
 }

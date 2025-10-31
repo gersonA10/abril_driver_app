@@ -25,6 +25,6 @@ class SpeechProvider with ChangeNotifier {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('speechRate', rate);
     _flutterTts.setSpeechRate(rate);
-    notifyListeners(); // Notifica a toda la app del cambio
+    notifyListeners(); 
   }
 }

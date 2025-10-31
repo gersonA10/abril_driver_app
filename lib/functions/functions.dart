@@ -50,6 +50,7 @@ import 'package:abril_driver_app/utils/location_manager.dart';
 
   bool isInChatPage = false;
 bool isPressed = false;
+bool pendingChatNavigation = false;
 
 // fmlt.LatLng? currentPos;
   fmlt.LatLng? currentPositionNew;
@@ -333,9 +334,9 @@ double calcularDistancia(fmlt.LatLng origen, fmlt.LatLng destino, String flag) {
 }
 
 
-Future<List<fmlt.LatLng>> getRouteFromGraphHopper(double startLat, double startLng, double endLat, double endLng) async {
-  const String apiKey = '55cb099e-7d08-457a-b176-52d07bc27a19'; 
-  final String url = 'https://graphhopper.com/api/1/route?key=$apiKey';
+Future<List<fmlt.LatLng>> getRouteFromGraphHopper(double startLat, double startLng, double endLat, double endLng, {String? apiKey}) async {
+  final String effectiveApiKey = apiKey ?? '55cb099e-7d08-457a-b176-52d07bc27a19'; 
+  final String url = 'https://graphhopper.com/api/1/route?key=$effectiveApiKey';
 
   final body = jsonEncode({
     "points": [
@@ -379,7 +380,6 @@ Future<List<fmlt.LatLng>> getRouteFromGraphHopper(double startLat, double startL
     // throw Exception('Error al obtener la ruta de GraphHopper: ${response.statusCode}');
   }
 }
-
 
 Future<DeudaResponse?> obtenerDeudas(int driverId) async {
   final url = Uri.parse('https://15deabril.macrobyte.site/api/deuda/driver');
@@ -2158,6 +2158,10 @@ driverStatus() async {
     if (response.statusCode == 200) {
       userDetails = jsonDecode(response.body)['data'];
       result = true;
+
+      // 💡 *** SOLUCIÓN 2: GUARDAR ESTADO EN PREFS ***
+      await pref.setBool('driver_active', userDetails['active']);
+
       if (userDetails['active'] == false) {
         if (screenOn == true) {
           if (platform == TargetPlatform.android) {
@@ -2167,7 +2171,7 @@ driverStatus() async {
 
         positionStream?.cancel();
         positionStream = null;
-        stopLocationUpdates(); 
+        stopLocationUpdates(); // 💡 Asegurarse que esta función existe y funciona
         rideStart?.cancel();
         rideStart = null;
         userInactive();
@@ -2177,7 +2181,7 @@ driverStatus() async {
             screenOn = true;
           }
         }
-        currentPositionUpdate();
+        currentPositionUpdate(); // Reiniciar el timer
         userActive();
       }
       valueNotifierHome.incrementNotifier();
@@ -2256,53 +2260,59 @@ currentPositionUpdate() async {
   geolocs.LocationPermission permission;
   GeoHasher geo = GeoHasher();
 
-  Timer.periodic(const Duration(seconds: 5), (timer) async {
-    if (userDetails.isNotEmpty && userDetails['role'] == 'driver') {
-      serviceEnabled =
-          await geolocs.GeolocatorPlatform.instance.isLocationServiceEnabled();
-      permission = await geolocs.GeolocatorPlatform.instance.checkPermission();
+  // Cancelar cualquier timer existente para evitar duplicados
+  locationTimer?.cancel(); 
 
-      if (userDetails['active'] == true &&
-          serviceEnabled == true &&
-          permission != geolocs.LocationPermission.denied &&
-          permission != geolocs.LocationPermission.deniedForever) {
-        if (driverReq.isEmpty) {
-          if (requestStreamStart == null ||
-              requestStreamStart?.isPaused == true) {
-            streamRequest();
-          }
+  locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+    if (userDetails.isEmpty || userDetails['role'] != 'driver') {
+      timer.cancel(); // Detener si no hay datos de conductor
+      return;
+    }
 
-          if ((rideStart == null || rideStart?.isPaused == true) &&
-              (centerPosition != null)) {
-            rideRequest();
-          }
-        } else if (driverReq.isNotEmpty && driverReq['accepted_at'] != null) {
-          if (rideStreamStart == null ||
-              rideStreamStart?.isPaused == true ||
-              rideStreamChanges == null ||
-              rideStreamChanges?.isPaused == true) {
-            streamRide();
-          }
+    serviceEnabled =
+        await geolocs.GeolocatorPlatform.instance.isLocationServiceEnabled();
+    permission = await geolocs.GeolocatorPlatform.instance.checkPermission();
+
+    // 💡 *** LÓGICA PRINCIPAL MOVIDA DENTRO DE LA COMPROBACIÓN 'active' ***
+    if (userDetails['active'] == true &&
+        serviceEnabled == true &&
+        permission != geolocs.LocationPermission.denied &&
+        permission != geolocs.LocationPermission.deniedForever) {
+      
+      if (driverReq.isEmpty) {
+        if (requestStreamStart == null || requestStreamStart?.isPaused == true) {
+          streamRequest();
         }
 
-        if (positionStream == null || positionStream!.isPaused) {
-          positionStreamData();
+        if ((rideStart == null || rideStart?.isPaused == true) &&
+            (centerPosition != null)) {
+          rideRequest();
         }
+      } else if (driverReq.isNotEmpty && driverReq['accepted_at'] != null) {
+        if (rideStreamStart == null ||
+            rideStreamStart?.isPaused == true ||
+            rideStreamChanges == null ||
+            rideStreamChanges?.isPaused == true) {
+          streamRide();
+        }
+      }
 
-        final firebase = FirebaseDatabase.instance.ref();
-        String formattedDate = DateFormat('dd-MM-yyyy').format(DateTime.now());
-        String formattedTime = DateFormat('HH:mm:ss').format(DateTime.now()); // Formato de 24 horas con segundos
+      if (positionStream == null || positionStream!.isPaused) {
+        positionStreamData();
+      }
 
+      final firebase = FirebaseDatabase.instance.ref();
+      String formattedDate = DateFormat('dd-MM-yyyy').format(DateTime.now());
+      String formattedTime = DateFormat('HH:mm:ss').format(DateTime.now());
 
-        try {
-          firebase.child('drivers/driver_${userDetails['id']}').update({
+      try {
+        firebase.child('drivers/driver_${userDetails['id']}').update({
             'bearing': heading,
             'date': DateTime.now().toString(),
             'id': userDetails['id'],
             'g': geo.encode(double.parse(currentPositionNew!.longitude.toString()),
                 double.parse(currentPositionNew!.latitude.toString())),
             'is_active': userDetails['active'] == true ? 1 : 0,
-            // 'is_available': userDetails['available'],
             'l': {'0': currentPositionNew!.latitude, '1': currentPositionNew!.longitude},
             'mobile': userDetails['mobile'],
             'name': userDetails['name'],
@@ -2317,53 +2327,64 @@ currentPositionUpdate() async {
             'ownerid': userDetails['owner_id'],
             'service_location_id': userDetails['service_location_id'],
             'transport_type': userDetails['transport_type'],
-
           });
-          //Nuevo
-          // **Nuevo: Guardar historial de la ubicación**
-          firebase.child('historial/${userDetails['id']}/$formattedDate/$formattedTime').update({
-            'lat': currentPositionNew!.latitude,
-            'lng': currentPositionNew!.longitude,
-          });
+        // firebase.child('historial/${userDetails['id']}/$formattedDate/$formattedTime').update({
+        //   'lat': currentPositionNew!.latitude,
+        //   'lng': currentPositionNew!.longitude,
+        // });
 
-          if (driverReq.isNotEmpty) {
-            if (driverReq['accepted_at'] != null &&
-                driverReq['is_completed'] == 0) {
-              requestDetailsUpdate(
-                  double.parse(heading.toString()),
-                  double.parse(currentPositionNew!.latitude.toString()),
-                  double.parse(currentPositionNew!.longitude.toString()));
 
-              var distCalc = calculateDistance(
-                currentPositionNew!.latitude,
-                currentPositionNew!.longitude,
-                driverReq['drop_lat'],
-                driverReq['drop_lng'],
-              );
-              distTime = double.parse((distCalc / 1000).toString());
-            }
+        if (driverReq.isNotEmpty) {
+          if (driverReq['accepted_at'] != null &&
+              driverReq['is_completed'] == 0) {
+            requestDetailsUpdate(
+                double.parse(heading.toString()),
+                double.parse(currentPositionNew!.latitude.toString()),
+                double.parse(currentPositionNew!.longitude.toString()));
+
+            var distCalc = calculateDistance(
+              currentPositionNew!.latitude,
+              currentPositionNew!.longitude,
+              driverReq['drop_lat'],
+              driverReq['drop_lng'],
+            );
+            distTime = double.parse((distCalc / 1000).toString());
           }
+        }
 
+        valueNotifierHome.incrementNotifier();
+      } catch (e) {
+        if (e is SocketException) {
+          internet = false;
           valueNotifierHome.incrementNotifier();
-        } catch (e) {
-          if (e is SocketException) {
-            internet = false;
-            valueNotifierHome.incrementNotifier();
-          }
         }
-      } else if (userDetails['active'] == false &&
-          serviceEnabled == true &&
-          permission != geolocs.LocationPermission.denied &&
-          permission != geolocs.LocationPermission.deniedForever) {
-        if (positionStream == null || positionStream!.isPaused) {
-          positionStreamData();
-        }
-      } else if (serviceEnabled == false && userDetails['active'] == true) {
-        await driverStatus();
-        // await location.requestService();
-        await geolocs.Geolocator.getCurrentPosition(
-            desiredAccuracy: geolocs.LocationAccuracy.low);
       }
+    } 
+    // 💡 *** ELSE BLOCK PARA DETENER STREAMS SI NO ESTÁ ACTIVO ***
+    else {
+      // Detener listeners si el conductor está inactivo o sin permisos/servicio
+      if (positionStream != null && !positionStream!.isPaused) {
+        positionStream?.cancel();
+        positionStream = null;
+      }
+      if (rideStart != null && !rideStart!.isPaused) {
+        rideStart?.cancel();
+        rideStart = null;
+      }
+      if (requestStreamStart != null && !requestStreamStart!.isPaused) {
+        requestStreamStart?.cancel();
+        requestStreamStart = null;
+      }
+      if (rideStreamStart != null && !rideStreamStart!.isPaused) {
+        rideStreamStart?.cancel();
+        rideStreamStart = null;
+      }
+      if (rideStreamChanges != null && !rideStreamChanges!.isPaused) {
+        rideStreamChanges?.cancel();
+        rideStreamChanges = null;
+      }
+
+      // ... (lógica de 'else if (userDetails['active'] == false ...)' y comprobaciones de 'ownerStatus')
       if (userDetails['role'] == 'driver') {
         var driverState = await FirebaseDatabase.instance
             .ref('drivers/driver_${userDetails['id']}')
@@ -2375,13 +2396,11 @@ currentPositionUpdate() async {
             await driverStatus();
           }
           valueNotifierHome.incrementNotifier();
-          //audioPlayer.play(audio);
         } else if (driverState.child('approve').value == 1 &&
             userDetails['approve'] == false) {
           await getUserDetails();
           valueNotifierHome.incrementNotifier();
 
-          //audioPlayer.play(audio);
         }
         if (driverState.child('fleet_changed').value == 1) {
           FirebaseDatabase.instance
@@ -2391,7 +2410,6 @@ currentPositionUpdate() async {
           await getUserDetails();
           valueNotifierHome.incrementNotifier();
 
-          //audioPlayer.play(audio);
         }
         if (driverState.child('is_deleted').value == 1) {
           FirebaseDatabase.instance
@@ -2419,8 +2437,10 @@ currentPositionUpdate() async {
                   {'vehicle_type_icon': userDetails['vehicle_type_icon_for']});
         }
       }
-    } else if (userDetails['role'] == 'owner') {
-      var ownerStatus = await FirebaseDatabase.instance
+    } 
+    
+    if(userDetails['role'] == 'owner') {
+       var ownerStatus = await FirebaseDatabase.instance
           .ref('owners/owner_${userDetails['id']}')
           .get();
       if (ownerStatus.child('approve').value == 0 &&
@@ -2436,7 +2456,6 @@ currentPositionUpdate() async {
     }
   });
 }
-
 //add request details in firebase realtime database
 
 List latlngArray = [];
@@ -2534,22 +2553,13 @@ userInactive() {
 
 userActive() {
   final firebase = FirebaseDatabase.instance.ref();
-  // firebase.child('drivers/driver_${userDetails['id']}').update({
-  //   'is_active': 1,
-  //   'l': {'0': centerPosition!.latitude, '1': centerPosition!.longitude},
-  //   'updated_at': ServerValue.timestamp,
-  //   'is_available': userDetails['available'],
-  // });
     firebase.child('drivers/driver_${userDetails['id']}').update({
     'is_active': 1,
     'l': {'0': centerPosition!.latitude, '1': centerPosition!.longitude},
     'updated_at': ServerValue.timestamp,
-    // 'is_available': userDetails['available'],
     'bearing': heading,
     'date': DateTime.now().toString(),
     'id': userDetails['id'],
-    // 'g': geo.encode(double.parse(currentPos!.longitude.toString()),
-    //     double.parse(currentPos!.latitude.toString())),
     'mobile': userDetails['mobile'],
     'name': userDetails['name'],
     'profile_picture': userDetails['profile_picture'],
@@ -2574,12 +2584,32 @@ calculateIdleDistance(lat1, lon1, lat2, lon2) {
   return val;
 }
 
+Future<fmlt.LatLng> _getDriverLocation() async {
+  if (currentPositionNew != null) {
+    return currentPositionNew!;
+  }
+
+  try {
+    geolocs.Position position = await geolocs.Geolocator.getCurrentPosition(
+      desiredAccuracy: geolocs.LocationAccuracy.bestForNavigation,
+    );
+    fmlt.LatLng newPos = fmlt.LatLng(position.latitude, position.longitude);
+    currentPositionNew = newPos; 
+    return newPos;
+  } catch (e) {
+    print('Error al obtener la ubicación de fallback: $e');
+    return fmlt.LatLng(0, 0);
+  }
+}
+
 
 //driver request accept
 
 requestAccept(String requestID) async {
   dynamic result;
   try {
+
+    fmlt.LatLng driverLocation = await _getDriverLocation();
 
     var response = await http.post(Uri.parse('${url}api/v1/request/respond'),
         headers: {
@@ -2589,6 +2619,8 @@ requestAccept(String requestID) async {
         body: jsonEncode({
           'request_id': requestID,
           'is_accept': 1,
+          'latitud_accion': driverLocation.latitude, 
+          'longitud_accion': driverLocation.longitude
     }));
 
     if (response.statusCode == 200) {
@@ -2725,12 +2757,17 @@ sound() async {
 driverArrived() async {
   dynamic result;
   try {
+    fmlt.LatLng driverLocation = await _getDriverLocation();
     var response = await http.post(Uri.parse('${url}api/v1/request/arrived'),
         headers: {
           'Authorization': 'Bearer ${bearerToken[0].token}',
           'Content-Type': 'application/json'
         },
-        body: jsonEncode({'request_id': driverReq['id']}));
+        body: jsonEncode({
+          'request_id': driverReq['id'],
+          'latitud_accion': driverLocation.latitude, 
+          'longitud_accion': driverLocation.longitude
+        }));
     if (response.statusCode == 200) {
       if (jsonDecode(response.body)['message'] == 'driver_arrived') {
         waitingBeforeTime = 0;
@@ -2801,6 +2838,7 @@ openWazeMap(lat, lng) async {
 tripStart() async {
   dynamic result;
   try {
+    fmlt.LatLng driverLocation = await _getDriverLocation();
     var response = await http.post(Uri.parse('${url}api/v1/request/started'),
         headers: {
           'Authorization': 'Bearer ${bearerToken[0].token}',
@@ -2810,7 +2848,9 @@ tripStart() async {
           'request_id': driverReq['id'],
           'pick_lat': driverReq['pick_lat'],
           'pick_lng': driverReq['pick_lng'],
-          'ride_otp': driverOtp
+          'ride_otp': driverOtp,
+          'latitud_accion': driverLocation.latitude, 
+          'longitud_accion': driverLocation.longitude
         }));
     if (response.statusCode == 200) {
       result = 'success';
@@ -2870,6 +2910,7 @@ readyToPickup(requestid) async {
 tripStartDispatcher() async {
   dynamic result;
   try {
+    fmlt.LatLng driverLocation = await _getDriverLocation();
     var response = await http.post(Uri.parse('${url}api/v1/request/started'),
         headers: {
           'Authorization': 'Bearer ${bearerToken[0].token}',
@@ -2878,7 +2919,9 @@ tripStartDispatcher() async {
         body: jsonEncode({
           'request_id': driverReq['id'],
           'pick_lat': driverReq['pick_lat'],
-          'pick_lng': driverReq['pick_lng']
+          'pick_lng': driverReq['pick_lng'],
+          'latitud_accion': driverLocation.latitude, 
+          'longitud_accion': driverLocation.longitude
         }));
     if (response.statusCode == 200) {
       result = 'success';
@@ -3152,6 +3195,8 @@ endTrip() async {
     //   'trip_start': "1",
     // });
 
+    fmlt.LatLng driverLocation = await _getDriverLocation();
+
     var response = await http.post(Uri.parse('${url}api/v1/request/end'),
         headers: {
           'Authorization': 'Bearer ${bearerToken[0].token}',
@@ -3164,6 +3209,8 @@ endTrip() async {
           'after_arrival_waiting_time': 0,
           'drop_lat': currentPositionNew!.latitude,
           'drop_lng': currentPositionNew!.longitude,
+          'latitud_accion': driverLocation.latitude, // 💡 MODIFICADO
+          'longitud_accion': driverLocation.longitude,
           'drop_address': dropAddress,
           'before_trip_start_waiting_time': (waitingBeforeTime != null &&
                   waitingBeforeTime > 60 &&
@@ -3423,6 +3470,8 @@ makingPhoneCall(phnumber) async {
 cancelRequestDriver(reason) async {
   dynamic result;
   try {
+
+    fmlt.LatLng driverLocation = await _getDriverLocation();
     var response = await http.post(
         Uri.parse('${url}api/v1/request/cancel/by-driver'),
         headers: {
@@ -3430,7 +3479,8 @@ cancelRequestDriver(reason) async {
           'Content-Type': 'application/json'
         },
         body: jsonEncode(
-            {'request_id': driverReq['id'], 'custom_reason': reason}));
+            {'request_id': driverReq['id'], 'custom_reason': reason, 'latitud_accion': driverLocation.latitude, // 💡 MODIFICADO
+          'longitud_accion': driverLocation.longitude}));
 
     if (response.statusCode == 200) {
       if (jsonDecode(response.body)['success'] == true) {
@@ -4442,7 +4492,6 @@ userLogout() async {
       'Content-Type': 'application/json'
     });
     if (response.statusCode == 200) {
-      // print(id);
       if (role != 'owner') {
         final position = FirebaseDatabase.instance.ref();
         position.child('drivers/driver_$id').update({
@@ -5045,6 +5094,29 @@ streamEnd(id) {
   });
 }
 
+
+void _navigateToChat() {
+  // Comprueba si ya estás en la página de chat
+  if (isInChatPage == false) {
+    isInChatPage = true; // Marca que estás entrando al chat
+    debugPrint('Detectado cambio de mensaje. Navegando al chat...');
+    
+    // Usa el navigatorKey global de main.dart para abrir la página de chat
+    navigatorKey.currentState
+        ?.push(MaterialPageRoute(builder: (context) => const ChatPage()))
+        .then((_) {
+      // Esto se ejecuta cuando regresas (sales) de la página de chat
+      debugPrint('Regresando del chat. Reseteando estado.');
+      if (navigatorKey.currentContext != null) { // Verifica si el contexto sigue montado
+        isInChatPage = false; // Permite que se vuelva a abrir la próxima vez
+      }
+    });
+  } else {
+    debugPrint('Intento de abrir el chat mientras ya estaba abierto. Ignorando.');
+  }
+}
+
+
 streamRide() {
   requestStreamEnd?.cancel();
   requestStreamStart?.cancel();
@@ -5054,9 +5126,10 @@ streamRide() {
   requestStreamEnd = null;
   rideStreamStart = null;
   rideStreamChanges = null;
+
   rideStreamChanges = FirebaseDatabase.instance
       .ref('requests/${driverReq['id']}')
-      .onChildChanged
+      .onChildChanged // <-- Este es el listener principal para cambios
       .handleError((onError) {
     rideStreamChanges?.cancel();
   }).listen((DatabaseEvent event) {
@@ -5065,25 +5138,25 @@ streamRide() {
       if (driverReq.isEmpty) {
         userReject = true;
       }
-    } else if (event.snapshot.key.toString() == 'message_by_user') {
-      // getCurrentMessages();
+    } else if (event.snapshot.key.toString() == 'nro_mensajes_cliente') { // 💡 CAMBIO DE 'message_by_user'
+      _navigateToChat(); // 💡 LLAMA A LA NUEVA FUNCIÓN
     } else if (event.snapshot.key.toString() == 'is_paid' ||
         event.snapshot.key.toString() == 'modified_by_user') {
       getUserDetails();
     }
   });
+
   rideStreamStart = FirebaseDatabase.instance
       .ref('requests/${driverReq['id']}')
-      .onChildAdded
+      .onChildAdded // <-- Esto escucha los datos iniciales
       .handleError((onError) {
     rideStreamChanges?.cancel();
   }).listen((DatabaseEvent event) async {
     if (event.snapshot.key.toString() == 'cancelled_by_user') {
       getUserDetails();
-
       userReject = true;
-    } else if (event.snapshot.key.toString() == 'message_by_user') {
-      // getCurrentMessages();
+    } else if (event.snapshot.key.toString() == 'nro_mensajes_cliente') { // 💡 CAMBIO DE 'message_by_user'
+       _navigateToChat(); // 💡 LLAMA A LA NUEVA FUNCIÓN
     } else if (event.snapshot.key.toString() == 'is_paid' ||
         event.snapshot.key.toString() == 'modified_by_user') {
       getUserDetails();
